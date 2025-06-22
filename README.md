@@ -123,6 +123,88 @@ pip uninstall faiss-cpu
 pip install faiss-cpu
 ```
 
+## Dataset: MedMentions ST21pv
+
+This project uses the MedMentions ST21pv corpus, a high-quality biomedical entity linking dataset with UMLS annotations.
+
+### Dataset Overview
+
+- **Source**: Chan Zuckerberg Initiative MedMentions corpus
+- **Subset**: ST21pv (21 Semantic Types and Preferred Vocabularies)
+- **Format**: PubTator format
+- **Entity IDs**: UMLS concepts (can be mapped to MONDO IDs)
+- **Content**: 4,392 PubMed abstracts with exhaustive entity annotations
+
+### Download Instructions
+
+```bash
+# Clone the official MedMentions repository
+git clone https://github.com/chanzuckerberg/MedMentions.git
+
+# Rename to match project structure
+mv MedMentions medmentions
+
+# Extract the ST21pv corpus data
+cd medmentions/st21pv/data
+gunzip corpus_pubtator.txt.gz
+```
+
+### Dataset Structure
+
+The corpus is in PubTator format with the following structure:
+
+```
+PMID|t|Title text
+PMID|a|Abstract text
+PMID    StartIndex    EndIndex    MentionText    SemanticType    EntityID
+...
+[blank line separating documents]
+```
+
+#### Example Entry:
+```
+25763772|t|DCTN4 as a modifier of chronic Pseudomonas aeruginosa infection in cystic fibrosis
+25763772|a|Pseudomonas aeruginosa (Pa) infection in cystic fibrosis (CF) patients is associated with...
+25763772    0    5    DCTN4    T103    UMLS:C4308010
+25763772    23   63   chronic Pseudomonas aeruginosa infection    T038    UMLS:C0854135
+25763772    67   82   cystic fibrosis    T038    UMLS:C0010674
+```
+
+### Field Descriptions
+
+- **PMID**: PubMed ID of the paper
+- **StartIndex/EndIndex**: Character positions in the concatenated title + " " + abstract
+- **MentionText**: The actual text span of the entity mention
+- **SemanticType**: UMLS semantic type (e.g., T103 = "Amino Acid, Peptide, or Protein")
+- **EntityID**: UMLS concept identifier (format: UMLS:CXXXXXXX)
+
+### Dataset Statistics
+
+- **Total lines**: ~216,458
+- **Documents**: 4,392 PubMed abstracts
+- **Entity mentions**: Exhaustively annotated biomedical entities
+- **Entity types**: 21 UMLS semantic types relevant to biomedical information retrieval
+
+### Citation
+
+If you use the MedMentions dataset, please cite:
+
+```bibtex
+@inproceedings{mohan2019medmentions,
+  title={MedMentions: A Large Biomedical Corpus Annotated with UMLS Concepts},
+  author={Mohan, Sunil and Li, Donghui},
+  booktitle={Proceedings of the 2019 Conference on Automated Knowledge Base Construction (AKBC 2019)},
+  year={2019},
+  address={Amherst, Massachusetts, USA}
+}
+```
+
+### Notes
+
+- The original S3 download link (`https://s3.amazonaws.com/medmentions/data/pubtator-mentions.tar.gz`) is no longer available
+- Use the GitHub repository as the official source
+- For MONDO ID mapping, you'll need to create UMLS → MONDO mappings separately
+
 ## Project Structure
 
 *This section will be updated as the project develops.*
