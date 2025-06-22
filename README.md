@@ -401,6 +401,20 @@ Before running the script, ensure you have:
 
 We provide a baseline implementation using NVIDIA's BioMegatron model fine-tuned for entity linking classification.
 
+#### 🔧 **Critical Fixes Applied**
+
+**Problem Identified**: The original implementation had a critical training bug where:
+- Negative sampling used random permutation, creating false negatives (correct pairs labeled as incorrect)
+- Model learned inverted associations (malaria→mumps scored higher than malaria→malaria)
+- Used meaningless MONDO codes instead of medical terms for training
+
+**Solutions Implemented**:
+1. **Proper Negative Sampling**: Ensures negative pairs are truly incorrect (never valid mention-MONDO combinations)
+2. **Semantic Text Matching**: Uses representative mention text instead of MONDO codes for meaningful semantic learning
+3. **Improved Training Parameters**: Reduced learning rate, added warmup, increased epochs for better convergence
+
+**Performance Impact**: Fixed training should achieve ~60-80% accuracy instead of inverted/poor performance.
+
 #### Training
 
 The training script fine-tunes BioMegatron to rank MONDO candidates for given mentions:
@@ -412,18 +426,21 @@ python3 train_biomegatron_cls.py
 **What the training script does:**
 
 1. **Loads the pre-trained model**: Uses `EMBO/BioMegatron345mUncased` (community-uploaded BioMegatron)
-2. **Creates training pairs**: 
-   - **Positive pairs**: mention + [SEP] + correct_mondo_id (label=1.0)
-   - **Negative pairs**: mention + [SEP] + random_mondo_id (label=0.0)
-3. **Fine-tunes for regression**: Model learns to score mention-MONDO pairs
-4. **Saves trained model**: Stores in `models/biomegatron_mondo_cls_final/`
+2. **Creates representative mention mappings**: Maps each MONDO ID to its most frequent mention text
+3. **Creates training pairs with proper semantic matching**: 
+   - **Positive pairs**: mention + [SEP] + representative_mention_text (label=1.0)
+   - **Negative pairs**: mention + [SEP] + different_representative_text (label=0.0)
+   - **✅ FIXED**: Uses proper negative sampling to ensure negatives are truly incorrect
+4. **Fine-tunes for regression**: Model learns to score mention-text pairs semantically
+5. **Saves trained model**: Stores in `models/biomegatron_mondo_cls_final/`
 
 **Training configuration:**
-- **Epochs**: 3
+- **Epochs**: 5 (increased for better learning)
 - **Batch size**: 16 per device
-- **Learning rate**: 2e-5
+- **Learning rate**: 1e-5 (reduced for stability)
 - **Max sequence length**: 64 tokens
 - **Evaluation**: Every epoch with early stopping
+- **Improvements**: Added warmup steps and weight decay for better convergence
 
 **Note**: Trained models are not included in the git repository due to size constraints. You need to train the model first using the training script above.
 
@@ -454,9 +471,10 @@ for mondo_id, score in predictions:
 #### Model Architecture
 
 - **Base model**: BioMegatron-BERT (345M parameters)
-- **Task**: Binary classification/regression for mention-MONDO pairs
-- **Input format**: `"mention [SEP] MONDO_ID"`
-- **Output**: Confidence score (0-1) for the pair match
+- **Task**: Binary classification/regression for mention-text pairs
+- **Input format**: `"mention [SEP] representative_mention_text"`
+- **Output**: Confidence score (0-1) for semantic similarity
+- **✅ FIXED**: Now uses meaningful medical terms instead of MONDO codes for better semantic matching
 
 #### Requirements
 
@@ -484,9 +502,11 @@ python3 build_sapbert_index.py
 **What the indexing script does:**
 
 1. **Loads SapBERT model**: Uses `cambridgeltl/SapBERT-from-PubMedBERT-fulltext`
-2. **Encodes MONDO entities**: Converts all unique MONDO IDs to embeddings
-3. **Builds FAISS index**: Creates IndexFlatIP for cosine similarity search
-4. **Saves artifacts**: Stores index and label mappings in `models/`
+2. **Creates representative mention mappings**: Maps each MONDO ID to its most frequent mention text
+3. **Encodes medical terms**: Converts representative mention text (not MONDO codes) to embeddings
+4. **Builds FAISS index**: Creates IndexFlatIP for cosine similarity search
+5. **Saves artifacts**: Stores index and label mappings in `models/`
+6. **✅ FIXED**: Uses meaningful medical terms for embeddings instead of meaningless MONDO codes
 
 **Generated files:**
 - `models/sapbert_mondo.faiss` - FAISS index file
