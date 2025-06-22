@@ -22,9 +22,11 @@ models_dir = pathlib.Path('models')
 models_dir.mkdir(exist_ok=True)
 
 print("Loading BioMegatron tokenizer and model...")
-tok = AutoTokenizer.from_pretrained("nvidia/biomegatron-bert-345m-uncased")
+# Use community-uploaded BioMegatron model
+model_name = "EMBO/BioMegatron345mUncased"
+tok = AutoTokenizer.from_pretrained(model_name)
 model = AutoModelForSequenceClassification.from_pretrained(
-    "nvidia/biomegatron-bert-345m-uncased", 
+    model_name, 
     num_labels=1  # regression score for ranking
 )
 

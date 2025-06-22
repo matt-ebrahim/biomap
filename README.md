@@ -411,7 +411,7 @@ python3 train_biomegatron_cls.py
 
 **What the training script does:**
 
-1. **Loads the pre-trained model**: Uses `nvidia/biomegatron-bert-345m-uncased`
+1. **Loads the pre-trained model**: Uses `EMBO/BioMegatron345mUncased` (community-uploaded BioMegatron)
 2. **Creates training pairs**: 
    - **Positive pairs**: mention + [SEP] + correct_mondo_id (label=1.0)
    - **Negative pairs**: mention + [SEP] + random_mondo_id (label=0.0)
