@@ -315,6 +315,86 @@ mondo_id = umls_to_mondo.get(umls_id)
 print(f"{umls_id} -> {mondo_id}")
 ```
 
+## Dataset Preparation
+
+After downloading the MedMentions corpus and creating the UMLS→MONDO mapping, you need to prepare benchmark splits for training and evaluation.
+
+### Preparation Script
+
+The `prepare_dataset.py` script processes the raw MedMentions data and creates train/dev/test splits with MONDO IDs:
+
+```bash
+python3 prepare_dataset.py
+```
+
+### What the Script Does
+
+1. **Loads UMLS→MONDO mappings** from `umls2mondo.tsv`
+2. **Processes MedMentions corpus** from `medmentions/st21pv/data/corpus_pubtator.txt`
+3. **Filters entities** to include only those with MONDO mappings
+4. **Removes duplicates** to ensure unique mention-MONDO pairs
+5. **Creates deterministic splits** using `random_state=42`:
+   - **Train**: 80% of data
+   - **Dev**: 10% of data  
+   - **Test**: 10% of data
+6. **Saves CSV files** in the `data/` directory
+
+### Output Files
+
+```
+data/
+├── mondo_train.csv    # Training set (~80%)
+├── mondo_dev.csv      # Development set (~10%)
+└── mondo_test.csv     # Test set (~10%)
+```
+
+### CSV Format
+
+Each CSV file contains the following columns:
+
+| Column | Description | Example |
+|--------|-------------|---------|
+| `pmid` | PubMed ID of the paper | `25763772` |
+| `mention` | Text span of the entity mention | `cystic fibrosis` |
+| `cui` | UMLS Concept Unique Identifier | `C0010674` |
+| `mondo_id` | Corresponding MONDO disease ID | `MONDO:0009061` |
+
+### Example Data
+
+```csv
+pmid,mention,cui,mondo_id
+25763772,cystic fibrosis,C0010674,MONDO:0009061
+25763772,chronic Pseudomonas aeruginosa infection,C0854135,MONDO:0005709
+```
+
+### Statistics
+
+The script provides detailed statistics during processing:
+
+- **Total entities processed**: Number of UMLS entities in MedMentions
+- **Entities with MONDO mappings**: Subset that can be mapped to MONDO
+- **Coverage percentage**: Proportion of entities with MONDO mappings
+- **Unique mention-MONDO pairs**: Final dataset size after deduplication
+- **Split sizes**: Exact counts and percentages for each split
+
+### Usage Notes
+
+- **Deterministic splits**: Using `random_state=42` ensures reproducible results
+- **Deduplication**: Removes duplicate mention-MONDO pairs across the corpus
+- **MONDO-only filtering**: Only includes entities that have valid MONDO mappings
+- **Directory creation**: Automatically creates `data/` directory if it doesn't exist
+
+### Prerequisites
+
+Before running the script, ensure you have:
+
+1. ✅ Downloaded MedMentions dataset (`medmentions/st21pv/data/corpus_pubtator.txt`)
+2. ✅ Created UMLS→MONDO mapping (`umls2mondo.tsv`)
+3. ✅ Installed required Python packages:
+   ```bash
+   pip install pandas
+   ```
+
 ## Project Structure
 
 *This section will be updated as the project develops.*
