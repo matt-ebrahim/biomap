@@ -13,10 +13,11 @@ We use conda for environment management instead of traditional Python virtual en
 
 ### Environment Files
 
-We provide two conda environment configurations:
+We provide three conda environment configurations:
 
 - **`environment.yaml`** - GPU-enabled version with CUDA support (for NVIDIA GPUs)
 - **`environment-cpu.yaml`** - CPU-only version (also supports Apple Silicon MPS)
+- **`environment-mac.yaml`** - Mac-optimized version that avoids common FAISS dependency issues
 
 ### Installation Instructions
 
@@ -26,13 +27,19 @@ conda env create -f environment.yaml
 conda activate biomap-env
 ```
 
-#### For CPU-Only Systems or Apple Silicon Macs
+#### For CPU-Only Systems
 ```bash
 conda env create -f environment-cpu.yaml
 conda activate biomap-env
 ```
 
-> **Note for Mac Users**: If you have an Apple Silicon Mac (M1/M2/M3), use the CPU environment file. It will automatically include MPS (Metal Performance Shaders) support for GPU acceleration on Apple hardware.
+#### For Mac Users (Recommended)
+```bash
+conda env create -f environment-mac.yaml
+conda activate biomap-env
+```
+
+> **Note for Mac Users**: We recommend using `environment-mac.yaml` as it's specifically optimized to avoid common FAISS dependency issues on macOS. If you have an Apple Silicon Mac (M1/M2/M3), this environment will automatically include MPS (Metal Performance Shaders) support for GPU acceleration.
 
 ### Verifying Your Installation
 
@@ -83,6 +90,37 @@ To update the environment with new dependencies:
 To completely remove the environment:
 ```bash
 conda env remove -n biomap-env
+```
+
+## Troubleshooting
+
+### FAISS ImportError on Mac
+
+If you encounter an error like:
+```
+ImportError: dlopen(.../_swigfaiss.so, 0x0002): Library not loaded: @rpath/libmkl_intel_lp64.1.dylib
+```
+
+This is a common issue with FAISS on Mac. Try these solutions:
+
+#### Solution 1: Use the Mac-optimized environment
+```bash
+conda env remove -n biomap-env
+conda env create -f environment-mac.yaml
+conda activate biomap-env
+```
+
+#### Solution 2: Fix existing environment
+```bash
+conda activate biomap-env
+conda install mkl
+```
+
+#### Solution 3: Use pip for FAISS
+```bash
+conda activate biomap-env
+pip uninstall faiss-cpu
+pip install faiss-cpu
 ```
 
 ## Project Structure
