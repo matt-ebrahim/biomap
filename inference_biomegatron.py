@@ -37,23 +37,47 @@ class BioMegatronEntityLinker:
         self.mondo_candidates = self._load_mondo_candidates()
         
     def _load_mondo_candidates(self):
-        """Load available MONDO IDs from training data."""
+        """Load available MONDO IDs and their representative mentions from training data."""
         try:
             train_df = pd.read_csv('data/mondo_train.csv')
-            candidates = sorted(train_df['mondo_id'].unique())
+            
+            # Create MONDO ID -> representative mention mapping
+            mondo_to_mentions = train_df.groupby('mondo_id')['mention'].apply(list).to_dict()
+            
+            # Use the most frequent mention as representative for each MONDO ID
+            self.mondo_to_text = {}
+            for mondo_id, mentions in mondo_to_mentions.items():
+                mention_counts = pd.Series(mentions).value_counts()
+                representative_mention = mention_counts.index[0]  # Most common
+                self.mondo_to_text[mondo_id] = representative_mention
+            
+            candidates = sorted(self.mondo_to_text.keys())
             print(f"Loaded {len(candidates)} MONDO candidates")
+            print("Sample MONDO ID -> mention mappings:")
+            for i, mondo_id in enumerate(candidates[:3]):
+                print(f"  {mondo_id} -> '{self.mondo_to_text[mondo_id]}'")
+            
             return candidates
         except FileNotFoundError:
             print("Warning: Training data not found, using dummy candidates")
+            self.mondo_to_text = {
+                "MONDO:0000001": "disease",
+                "MONDO:0000002": "disorder", 
+                "MONDO:0000003": "condition"
+            }
             return ["MONDO:0000001", "MONDO:0000002", "MONDO:0000003"]
     
     def score_candidates_batch(self, mention, candidates=None):
-        """Score MONDO candidates for a given mention using efficient batch processing."""
+        """Score MONDO candidates using representative mention text for better semantic matching."""
         if candidates is None:
             candidates = self.mondo_candidates
         
-        # Create mention-candidate pairs
-        pairs = [f"{mention} [SEP] {candidate}" for candidate in candidates]
+        # Create mention-candidate pairs using representative mention text instead of MONDO IDs
+        pairs = []
+        for candidate in candidates:
+            # Use representative mention text for this MONDO ID
+            representative_text = self.mondo_to_text.get(candidate, candidate)
+            pairs.append(f"{mention} [SEP] {representative_text}")
         
         all_scores = []
         
@@ -84,7 +108,7 @@ class BioMegatronEntityLinker:
             
             all_scores.extend(batch_scores)
         
-        # Create results
+        # Create results (return MONDO IDs, not the representative text)
         results = list(zip(candidates, all_scores))
         results.sort(key=lambda x: x[1], reverse=True)  # Sort by score descending
         
