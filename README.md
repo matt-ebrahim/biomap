@@ -395,9 +395,100 @@ Before running the script, ensure you have:
    pip install pandas
    ```
 
+## Baseline Models
+
+### BioMegatron Fine-tuned Classifier
+
+We provide a baseline implementation using NVIDIA's BioMegatron model fine-tuned for entity linking classification.
+
+#### Training
+
+The training script fine-tunes BioMegatron to rank MONDO candidates for given mentions:
+
+```bash
+python3 train_biomegatron_cls.py
+```
+
+**What the training script does:**
+
+1. **Loads the pre-trained model**: Uses `nvidia/biomegatron-bert-345m-uncased`
+2. **Creates training pairs**: 
+   - **Positive pairs**: mention + [SEP] + correct_mondo_id (label=1.0)
+   - **Negative pairs**: mention + [SEP] + random_mondo_id (label=0.0)
+3. **Fine-tunes for regression**: Model learns to score mention-MONDO pairs
+4. **Saves trained model**: Stores in `models/biomegatron_mondo_cls_final/`
+
+**Training configuration:**
+- **Epochs**: 3
+- **Batch size**: 16 per device
+- **Learning rate**: 2e-5
+- **Max sequence length**: 64 tokens
+- **Evaluation**: Every epoch with early stopping
+
+#### Inference
+
+Use the trained model to rank MONDO candidates:
+
+```bash
+python3 inference_biomegatron.py
+```
+
+**Programmatic usage:**
+
+```python
+from inference_biomegatron import BioMegatronEntityLinker
+
+# Initialize entity linker
+linker = BioMegatronEntityLinker()
+
+# Get top-5 MONDO predictions for a mention
+predictions = linker.predict("cystic fibrosis", top_k=5)
+
+# Results: [(mondo_id, confidence_score), ...]
+for mondo_id, score in predictions:
+    print(f"{mondo_id}: {score:.4f}")
+```
+
+#### Model Architecture
+
+- **Base model**: BioMegatron-BERT (345M parameters)
+- **Task**: Binary classification/regression for mention-MONDO pairs
+- **Input format**: `"mention [SEP] MONDO_ID"`
+- **Output**: Confidence score (0-1) for the pair match
+
+#### Requirements
+
+Additional packages needed for training:
+
+```bash
+# Install transformers and torch
+pip install torch transformers datasets
+```
+
+For CUDA support, install the appropriate PyTorch version for your system.
+
 ## Project Structure
 
-*This section will be updated as the project develops.*
+```
+entity-linking-benchmark/
+├── README.md                              # This documentation
+├── environments/
+│   ├── environment.yaml                   # CUDA-enabled environment
+│   ├── environment-cpu.yaml              # CPU/MPS environment  
+│   └── environment-mac.yaml              # Mac-optimized environment
+├── medmentions/st21pv/data/
+│   └── corpus_pubtator.txt               # MedMentions dataset
+├── umls2mondo.tsv                        # UMLS→MONDO mappings (11,116 entries)
+├── prepare_dataset.py                    # Dataset preparation script
+├── train_biomegatron_cls.py              # BioMegatron training script
+├── inference_biomegatron.py              # BioMegatron inference script
+├── data/                                 # Generated benchmark datasets
+│   ├── mondo_train.csv                   # Training split
+│   ├── mondo_dev.csv                     # Development split  
+│   └── mondo_test.csv                    # Test split
+└── models/                               # Trained models (created by training)
+    └── biomegatron_mondo_cls_final/      # Fine-tuned BioMegatron model
+```
 
 ## Usage
 
