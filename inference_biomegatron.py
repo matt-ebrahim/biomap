@@ -5,7 +5,7 @@ Inference script for BioMegatron entity linking model.
 This script demonstrates how to:
 1. Load the trained BioMegatron model
 2. Rank MONDO candidates for a given mention
-3. Return top-k predictions
+3. Return top-k predictions with optimized batch processing
 """
 
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -13,15 +13,22 @@ import torch
 import pandas as pd
 import numpy as np
 from pathlib import Path
+from tqdm import tqdm
 
 class BioMegatronEntityLinker:
-    def __init__(self, model_path="models/biomegatron_mondo_cls_final"):
+    def __init__(self, model_path="models/biomegatron_mondo_cls_final", batch_size=64):
         """Initialize the entity linker with trained model."""
         self.model_path = Path(model_path)
+        self.batch_size = batch_size
         
         print(f"Loading model from {self.model_path}")
         self.tokenizer = AutoTokenizer.from_pretrained(str(self.model_path))
         self.model = AutoModelForSequenceClassification.from_pretrained(str(self.model_path))
+        
+        # Move to GPU if available
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+        self.model.to(self.device)
+        print(f"Using device: {self.device}")
         
         # Set model to evaluation mode
         self.model.eval()
@@ -40,49 +47,72 @@ class BioMegatronEntityLinker:
             print("Warning: Training data not found, using dummy candidates")
             return ["MONDO:0000001", "MONDO:0000002", "MONDO:0000003"]
     
-    def score_candidates(self, mention, candidates=None):
-        """Score MONDO candidates for a given mention."""
+    def score_candidates_batch(self, mention, candidates=None):
+        """Score MONDO candidates for a given mention using efficient batch processing."""
         if candidates is None:
             candidates = self.mondo_candidates
         
         # Create mention-candidate pairs
         pairs = [f"{mention} [SEP] {candidate}" for candidate in candidates]
         
-        # Tokenize all pairs
-        inputs = self.tokenizer(
-            pairs,
-            truncation=True,
-            padding=True,
-            max_length=64,
-            return_tensors="pt"
-        )
+        all_scores = []
         
-        # Get predictions
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            scores = torch.sigmoid(outputs.logits).squeeze().cpu().numpy()
-        
-        # Handle single candidate case
-        if len(candidates) == 1:
-            scores = [scores]
+        # Process in batches for memory efficiency
+        for i in range(0, len(pairs), self.batch_size):
+            batch_pairs = pairs[i:i + self.batch_size]
+            
+            # Tokenize batch
+            inputs = self.tokenizer(
+                batch_pairs,
+                truncation=True,
+                padding=True,
+                max_length=64,
+                return_tensors="pt"
+            )
+            
+            # Move to device
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            
+            # Get predictions
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+                batch_scores = torch.sigmoid(outputs.logits).squeeze().cpu().numpy()
+            
+            # Handle single item case
+            if len(batch_pairs) == 1:
+                batch_scores = [batch_scores]
+            
+            all_scores.extend(batch_scores)
         
         # Create results
-        results = list(zip(candidates, scores))
+        results = list(zip(candidates, all_scores))
         results.sort(key=lambda x: x[1], reverse=True)  # Sort by score descending
         
         return results
     
+    def score_candidates(self, mention, candidates=None):
+        """Score MONDO candidates for a given mention (legacy method for compatibility)."""
+        return self.score_candidates_batch(mention, candidates)
+    
     def predict(self, mention, top_k=5):
         """Get top-k MONDO predictions for a mention."""
-        scores = self.score_candidates(mention)
+        scores = self.score_candidates_batch(mention)
         return scores[:top_k]
     
-    def predict_batch(self, mentions, top_k=5):
-        """Predict for multiple mentions."""
+    def predict_batch_efficient(self, mentions, top_k=5):
+        """Efficiently predict for multiple mentions with progress tracking."""
         results = {}
-        for mention in mentions:
+        
+        print(f"Processing {len(mentions)} mentions with batch size {self.batch_size}")
+        
+        for mention in tqdm(mentions, desc="BioMegatron batch inference"):
             results[mention] = self.predict(mention, top_k)
+        
         return results
+    
+    def predict_batch(self, mentions, top_k=5):
+        """Predict for multiple mentions (legacy method)."""
+        return self.predict_batch_efficient(mentions, top_k)
 
 def main():
     """Demonstration of the entity linker."""

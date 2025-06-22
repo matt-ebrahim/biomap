@@ -99,16 +99,20 @@ def evaluate_sapbert(test_df: pd.DataFrame, model_dir: str = "models") -> Dict[s
         return {}
 
 def evaluate_biomegatron(test_df: pd.DataFrame, model_dir: str = "models") -> Dict[str, float]:
-    """Evaluate BioMegatron classifier approach."""
+    """Evaluate BioMegatron classifier approach with optimized batch processing."""
     print("\n" + "="*50)
-    print("🧠 Evaluating BioMegatron Classifier")
+    print("🧠 Evaluating BioMegatron Classifier (Optimized)")
     print("="*50)
     
     try:
-        linker = BioMegatronEntityLinker()
+        # Use larger batch size for better GPU utilization
+        linker = BioMegatronEntityLinker(batch_size=128)
         
         ranked_lists = []
-        for mention in tqdm(test_df['mention'], desc="BioMegatron inference"):
+        mentions = test_df['mention'].tolist()
+        
+        print(f"Processing {len(mentions)} mentions...")
+        for mention in tqdm(mentions, desc="BioMegatron inference"):
             results = linker.predict(mention, top_k=10)
             ranked_list = [mondo_id for mondo_id, score in results]
             ranked_lists.append(ranked_list)
