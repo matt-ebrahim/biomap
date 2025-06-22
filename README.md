@@ -679,6 +679,109 @@ Results are saved as JSON with detailed information:
 pip install openai google-generativeai pandas tqdm
 ```
 
+## Unified Evaluation
+
+We provide a comprehensive evaluation script that tests all baseline models and provides direct comparison.
+
+### Running Complete Evaluation
+
+```bash
+# Evaluate all models on full test set
+python3 evaluate_all.py
+
+# Quick evaluation with limited samples
+python3 evaluate_all.py --max_samples 100
+
+# Evaluate specific models only
+python3 evaluate_all.py --skip_gpt --skip_gemini  # Skip LLM models
+python3 evaluate_all.py --skip_sapbert --skip_biomegatron  # Skip ML models
+
+# Control LLM cost by limiting candidates
+python3 evaluate_all.py --llm_candidates 20
+
+# Custom output file
+python3 evaluate_all.py --output my_results.json
+```
+
+### Evaluation Features
+
+- **Comprehensive metrics**: Hits@1, Hits@3, Hits@5, Hits@10, and MRR
+- **All baselines**: SapBERT, BioMegatron, GPT-4o, and Gemini
+- **Cost control**: Limit LLM candidate evaluation for budget management
+- **Flexible options**: Skip specific models or limit test samples
+- **Formatted output**: Comparison table and JSON results
+
+### Expected Output
+
+The script produces a comprehensive comparison table:
+
+```
+================================================================================
+📊 COMPREHENSIVE EVALUATION RESULTS
+================================================================================
+Model                   Hits@1      Hits@3      Hits@5     Hits@10         MRR
+--------------------------------------------------------------------------------
+SapBERT + FAISS         0.4250      0.6100      0.7200      0.8150      0.5375
+BioMegatron             0.3900      0.5750      0.6850      0.7800      0.4925
+GPT-4o                  0.4800      0.6400      0.7300      0.8200      0.5950
+Gemini                  0.4600      0.6200      0.7100      0.8000      0.5650
+================================================================================
+```
+
+### Evaluation Strategy
+
+#### SapBERT + FAISS
+- **Approach**: Fast similarity search using pre-computed embeddings
+- **Speed**: Very fast (~1ms per query)
+- **Coverage**: All MONDO entities in knowledge base
+
+#### BioMegatron Classifier  
+- **Approach**: Fine-tuned transformer for mention-entity classification
+- **Speed**: Moderate (~100ms per query)
+- **Coverage**: All MONDO entities, with learned ranking
+
+#### GPT-4o Zero-shot
+- **Approach**: Large language model with medical reasoning
+- **Speed**: Slow (~50 queries per minute due to API limits)
+- **Coverage**: Limited candidates for cost control (default: 50)
+
+#### Gemini Search-grounded
+- **Approach**: LLM with search capabilities for medical validation
+- **Speed**: Slow (~30 queries per minute)
+- **Coverage**: Limited candidates for cost control (default: 50)
+
+### Cost Considerations
+
+LLM evaluations can be expensive. The script provides cost control:
+
+- **Limited candidates**: Only evaluate top-N MONDO entities (default: 50)
+- **Batch processing**: Efficient API usage with rate limiting
+- **Skip options**: Skip expensive models during development
+- **Sample limits**: Test on subset of data first
+
+### JSON Output Format
+
+Results are saved with detailed breakdown:
+
+```json
+{
+  "SapBERT + FAISS": {
+    "Hits@1": 0.4250,
+    "Hits@3": 0.6100,
+    "Hits@5": 0.7200,
+    "Hits@10": 0.8150,
+    "MRR": 0.5375
+  },
+  "BioMegatron": {
+    "Hits@1": 0.3900,
+    "Hits@3": 0.5750,
+    "Hits@5": 0.6850,
+    "Hits@10": 0.7800,
+    "MRR": 0.4925
+  }
+}
+```
+
 ## Project Structure
 
 ```
@@ -697,6 +800,7 @@ entity-linking-benchmark/
 ├── build_sapbert_index.py                # SapBERT + FAISS index builder
 ├── inference_sapbert.py                  # SapBERT + FAISS inference script
 ├── llm_zero_shot.py                      # Zero-shot LLM evaluation (GPT-4o/Gemini)
+├── evaluate_all.py                       # Unified evaluation script for all models
 ├── data/                                 # Generated benchmark datasets
 │   ├── mondo_train.csv                   # Training split
 │   ├── mondo_dev.csv                     # Development split  
