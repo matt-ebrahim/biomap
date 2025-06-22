@@ -467,6 +467,95 @@ pip install torch transformers datasets
 
 For CUDA support, install the appropriate PyTorch version for your system.
 
+### SapBERT + FAISS Vector Search
+
+We provide a second baseline using SapBERT embeddings with FAISS for fast similarity search.
+
+#### Building the Index
+
+First, build the FAISS index from MONDO entities:
+
+```bash
+python3 build_sapbert_index.py
+```
+
+**What the indexing script does:**
+
+1. **Loads SapBERT model**: Uses `cambridgeltl/SapBERT-from-PubMedBERT-fulltext`
+2. **Encodes MONDO entities**: Converts all unique MONDO IDs to embeddings
+3. **Builds FAISS index**: Creates IndexFlatIP for cosine similarity search
+4. **Saves artifacts**: Stores index and label mappings in `models/`
+
+**Generated files:**
+- `models/sapbert_mondo.faiss` - FAISS index file
+- `models/sapbert_mondo_labels.npy` - MONDO ID labels
+- `models/sapbert_metadata.txt` - Index metadata
+
+#### Inference and Evaluation
+
+Run inference with automatic evaluation:
+
+```bash
+# Evaluation only
+python3 inference_sapbert.py --eval
+
+# Interactive demo only  
+python3 inference_sapbert.py --demo
+
+# Both evaluation and demo
+python3 inference_sapbert.py --eval --demo
+```
+
+**Evaluation metrics:**
+- **Hits@K**: Percentage of correct predictions in top-K results
+- **MRR**: Mean Reciprocal Rank of the correct prediction
+
+**Programmatic usage:**
+
+```python
+from inference_sapbert import SapBERTEntityLinker
+
+# Initialize entity linker
+linker = SapBERTEntityLinker(model_dir="models")
+
+# Search for similar MONDO entities
+results = linker.search("cystic fibrosis", top_k=5)
+
+# Results: [(mondo_id, similarity_score), ...]
+for mondo_id, score in results:
+    print(f"{mondo_id}: {score:.4f}")
+```
+
+#### Model Architecture
+
+- **Base model**: SapBERT (PubMedBERT-fulltext)
+- **Embedding dimension**: 768
+- **Similarity metric**: Cosine similarity (normalized L2)
+- **Search method**: FAISS IndexFlatIP for exact search
+- **Max sequence length**: 25 tokens
+
+#### Performance Characteristics
+
+- **Speed**: Very fast inference (~1ms per query)
+- **Memory**: Requires loading full MONDO embedding matrix
+- **Accuracy**: Depends on semantic similarity of embeddings
+- **Scalability**: Easily scales to large knowledge bases
+
+#### Requirements
+
+Additional packages needed:
+
+```bash
+# Install FAISS (CPU version)
+pip install faiss-cpu
+
+# Or for GPU version
+pip install faiss-gpu
+
+# Other dependencies
+pip install torch transformers tqdm
+```
+
 ## Project Structure
 
 ```
@@ -482,12 +571,17 @@ entity-linking-benchmark/
 ├── prepare_dataset.py                    # Dataset preparation script
 ├── train_biomegatron_cls.py              # BioMegatron training script
 ├── inference_biomegatron.py              # BioMegatron inference script
+├── build_sapbert_index.py                # SapBERT + FAISS index builder
+├── inference_sapbert.py                  # SapBERT + FAISS inference script
 ├── data/                                 # Generated benchmark datasets
 │   ├── mondo_train.csv                   # Training split
 │   ├── mondo_dev.csv                     # Development split  
 │   └── mondo_test.csv                    # Test split
-└── models/                               # Trained models (created by training)
-    └── biomegatron_mondo_cls_final/      # Fine-tuned BioMegatron model
+└── models/                               # Trained models and indices
+    ├── biomegatron_mondo_cls_final/      # Fine-tuned BioMegatron model
+    ├── sapbert_mondo.faiss               # SapBERT FAISS index
+    ├── sapbert_mondo_labels.npy          # MONDO ID labels for FAISS
+    └── sapbert_metadata.txt              # SapBERT index metadata
 ```
 
 ## Usage
