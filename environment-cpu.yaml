@@ -1,0 +1,31 @@
+name: biomap-env
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python>=3.8
+  - pandas
+  - tqdm
+  - scikit-learn
+  - sentencepiece
+  
+  # PyTorch CPU-only
+  - pytorch>=2.0
+  - torchvision
+  - torchaudio
+  - cpuonly
+  
+  # FAISS CPU-only
+  - faiss-cpu
+  
+  # Transformers and related
+  - transformers>=4.40
+  - datasets
+  
+  # Pip dependencies (packages not available in conda)
+  - pip
+  - pip:
+    - openai
+    - google-generativeai 

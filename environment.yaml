@@ -1,0 +1,32 @@
+name: biomap-env
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python>=3.8
+  - pandas
+  - tqdm
+  - scikit-learn
+  - sentencepiece
+  
+  # PyTorch with CUDA support (will fall back to CPU if CUDA not available)
+  - pytorch>=2.0
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1  # Adjust version based on your CUDA version
+  
+  # FAISS with GPU support
+  - faiss-gpu
+  
+  # Transformers and related
+  - transformers>=4.40
+  - datasets
+  
+  # Pip dependencies (packages not available in conda)
+  - pip
+  - pip:
+    - openai
+    - google-generativeai 
