@@ -425,6 +425,8 @@ python3 train_biomegatron_cls.py
 - **Max sequence length**: 64 tokens
 - **Evaluation**: Every epoch with early stopping
 
+**Note**: Trained models are not included in the git repository due to size constraints. You need to train the model first using the training script above.
+
 #### Inference
 
 Use the trained model to rank MONDO candidates:
