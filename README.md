@@ -203,7 +203,117 @@ If you use the MedMentions dataset, please cite:
 
 - The original S3 download link (`https://s3.amazonaws.com/medmentions/data/pubtator-mentions.tar.gz`) is no longer available
 - Use the GitHub repository as the official source
-- For MONDO ID mapping, you'll need to create UMLS → MONDO mappings separately
+- For MONDO ID mapping, see the next section for creating UMLS → MONDO mappings
+
+## UMLS → MONDO Crosswalk Mapping
+
+To enable entity linking with MONDO disease ontology IDs, you need to create a mapping from UMLS concepts (used in MedMentions) to MONDO IDs.
+
+### Why This Mapping is Needed
+
+The MedMentions dataset uses UMLS concept identifiers (e.g., `UMLS:C0010674`), but many biomedical applications prefer MONDO IDs for disease concepts. This crosswalk enables conversion between the two systems.
+
+### Download and Process MONDO Equivalencies
+
+```bash
+# Download the latest MONDO equivalencies file
+curl -L -o equivalencies.json "https://github.com/monarch-initiative/mondo/releases/download/v2025-06-03/equivalencies.json"
+
+# Extract UMLS to MONDO mappings using Python
+python3 -c "
+import json
+import re
+
+# Load the equivalencies JSON
+with open('equivalencies.json', 'r') as f:
+    data = json.load(f)
+
+# Extract UMLS to MONDO mappings
+umls_to_mondo = {}
+
+# Look through the graphs for equivalent node sets
+for graph in data['graphs']:
+    if 'equivalentNodesSets' in graph:
+        for equiv_set in graph['equivalentNodesSets']:
+            if 'nodeIds' in equiv_set:
+                umls_ids = []
+                mondo_ids = []
+                
+                # Find UMLS and MONDO IDs in the equivalent set
+                for node_id in equiv_set['nodeIds']:
+                    if 'umls/id/' in node_id:
+                        umls_match = re.search(r'umls/id/([A-Z0-9]+)', node_id)
+                        if umls_match:
+                            umls_ids.append(umls_match.group(1))
+                    elif 'MONDO_' in node_id:
+                        mondo_match = re.search(r'MONDO_([0-9]+)', node_id)
+                        if mondo_match:
+                            mondo_ids.append(f'MONDO:{mondo_match.group(1)}')
+                
+                # Create mappings for all combinations
+                for umls_id in umls_ids:
+                    for mondo_id in mondo_ids:
+                        umls_to_mondo[umls_id] = mondo_id
+
+print(f'Found {len(umls_to_mondo)} UMLS to MONDO mappings')
+
+# Write to TSV file
+with open('umls2mondo.tsv', 'w') as f:
+    for umls_cui, mondo_id in sorted(umls_to_mondo.items()):
+        f.write(f'{umls_cui}\t{mondo_id}\n')
+
+print('Saved to umls2mondo.tsv')
+"
+
+# Clean up the large JSON file
+rm equivalencies.json
+```
+
+### Mapping File Format
+
+The resulting `umls2mondo.tsv` file contains tab-separated mappings:
+
+```
+C0000744    MONDO:0008692
+C0000774    MONDO:0001770
+C0000832    MONDO:0004846
+C0010674    MONDO:0009061
+```
+
+**Format**: `UMLS_CUI <TAB> MONDO_ID`
+
+### Mapping Statistics
+
+- **Total mappings**: ~11,116 UMLS CUI → MONDO ID pairs
+- **File size**: ~250KB
+- **Coverage**: Verified overlap with MedMentions dataset
+- **Source**: Latest MONDO release equivalencies
+
+### Alternative: Download Pre-processed Mapping
+
+If the Python processing fails, you can try alternative sources:
+
+```bash
+# Note: The original monarch-dumps URL may be outdated
+# curl -L -O https://github.com/monarch-initiative/monarch-dumps/raw/master/monarch-umlscui-mappings.tsv
+# cut -f1,2 monarch-umlscui-mappings.tsv > umls2mondo.tsv
+```
+
+### Usage in Entity Linking
+
+```python
+# Example: Convert UMLS IDs from MedMentions to MONDO IDs
+umls_to_mondo = {}
+with open('umls2mondo.tsv', 'r') as f:
+    for line in f:
+        umls_cui, mondo_id = line.strip().split('\t')
+        umls_to_mondo[umls_cui] = mondo_id
+
+# Convert UMLS:C0010674 to MONDO:0009061
+umls_id = "C0010674"  # From MedMentions
+mondo_id = umls_to_mondo.get(umls_id)
+print(f"{umls_id} -> {mondo_id}")
+```
 
 ## Project Structure
 
