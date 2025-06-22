@@ -17,7 +17,8 @@ dependencies:
   - torchaudio
   - cpuonly
   
-  # FAISS CPU-only
+  # FAISS CPU-only with MKL support for Mac compatibility
+  - mkl
   - faiss-cpu
   
   # Transformers and related

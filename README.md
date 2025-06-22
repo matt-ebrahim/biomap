@@ -13,29 +13,29 @@ We use conda for environment management instead of traditional Python virtual en
 
 ### Environment Files
 
-We provide three conda environment configurations:
+We provide three conda environment configurations in the `environments/` directory:
 
-- **`environment.yaml`** - GPU-enabled version with CUDA support (for NVIDIA GPUs)
-- **`environment-cpu.yaml`** - CPU-only version (also supports Apple Silicon MPS)
-- **`environment-mac.yaml`** - Mac-optimized version that avoids common FAISS dependency issues
+- **`environments/environment.yaml`** - GPU-enabled version with CUDA support (for NVIDIA GPUs)
+- **`environments/environment-cpu.yaml`** - CPU-only version (also supports Apple Silicon MPS)
+- **`environments/environment-mac.yaml`** - Mac-optimized version that avoids common FAISS dependency issues
 
 ### Installation Instructions
 
 #### For NVIDIA GPU Systems (Linux/Windows with CUDA)
 ```bash
-conda env create -f environment.yaml
+conda env create -f environments/environment.yaml
 conda activate biomap-env
 ```
 
 #### For CPU-Only Systems
 ```bash
-conda env create -f environment-cpu.yaml
+conda env create -f environments/environment-cpu.yaml
 conda activate biomap-env
 ```
 
 #### For Mac Users (Recommended)
 ```bash
-conda env create -f environment-mac.yaml
+conda env create -f environments/environment-mac.yaml
 conda activate biomap-env
 ```
 
@@ -82,7 +82,7 @@ To update the environment with new dependencies:
 1. Modify the appropriate YAML file
 2. Update the environment:
    ```bash
-   conda env update -f environment.yaml --prune
+   conda env update -f environments/environment.yaml --prune
    ```
 
 ### Removing the Environment
@@ -106,7 +106,7 @@ This is a common issue with FAISS on Mac. Try these solutions:
 #### Solution 1: Use the Mac-optimized environment
 ```bash
 conda env remove -n biomap-env
-conda env create -f environment-mac.yaml
+conda env create -f environments/environment-mac.yaml
 conda activate biomap-env
 ```
 
