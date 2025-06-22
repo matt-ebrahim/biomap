@@ -131,7 +131,7 @@ class SapBERTEntityLinker:
         results = []
         for score, idx in zip(scores[0], indices[0]):
             if idx != -1:  # Valid index
-                mondo_id = self.labels[idx]
+                mondo_id = str(self.labels[idx])  # Convert numpy string to Python string
                 results.append((mondo_id, float(score)))
         
         return results
@@ -150,7 +150,7 @@ class SapBERTEntityLinker:
             mention_results = []
             for score, idx in zip(scores[i], indices[i]):
                 if idx != -1:
-                    mondo_id = self.labels[idx]
+                    mondo_id = str(self.labels[idx])  # Convert numpy string to Python string
                     mention_results.append((mondo_id, float(score)))
             results[mention] = mention_results
         

@@ -68,7 +68,7 @@ def encode_texts(texts, tokenizer, model, device, batch_size=32, max_length=25):
     return np.vstack(all_embeddings)
 
 def build_mondo_index(data_file="data/mondo_train.csv", output_dir="models"):
-    """Build FAISS index for MONDO entities."""
+    """Build FAISS index for MONDO entities using representative mention text."""
     # Setup
     device = setup_device()
     tokenizer, model, device = load_model(device)
@@ -77,17 +77,30 @@ def build_mondo_index(data_file="data/mondo_train.csv", output_dir="models"):
     output_path = Path(output_dir)
     output_path.mkdir(exist_ok=True)
     
-    # Load MONDO IDs from training data
+    # Load training data and create MONDO ID -> representative mention mapping
     print(f"Loading MONDO IDs from {data_file}")
     df = pd.read_csv(data_file)
-    mondo_ids = sorted(df['mondo_id'].unique())
+    
+    # For each MONDO ID, find the most representative mention (e.g., most common)
+    mondo_to_mentions = df.groupby('mondo_id')['mention'].apply(list).to_dict()
+    
+    # Use the first mention as representative (could be improved with frequency analysis)
+    mondo_to_text = {}
+    for mondo_id, mentions in mondo_to_mentions.items():
+        # Use the most frequent mention for this MONDO ID
+        mention_counts = pd.Series(mentions).value_counts()
+        representative_mention = mention_counts.index[0]  # Most common
+        mondo_to_text[mondo_id] = representative_mention
+    
+    mondo_ids = sorted(mondo_to_text.keys())
+    mondo_texts = [mondo_to_text[mondo_id] for mondo_id in mondo_ids]
+    
     print(f"Found {len(mondo_ids)} unique MONDO IDs")
+    print("Sample mappings:")
+    for i in range(min(5, len(mondo_ids))):
+        print(f"  {mondo_ids[i]} -> '{mondo_texts[i]}'")
     
-    # Also collect any available MONDO names/descriptions if present
-    # For now, we'll use the MONDO IDs directly as text
-    mondo_texts = mondo_ids.copy()
-    
-    # Encode MONDO texts
+    # Encode MONDO texts (using representative mentions)
     mondo_embeddings = encode_texts(mondo_texts, tokenizer, model, device)
     print(f"Generated embeddings shape: {mondo_embeddings.shape}")
     
@@ -114,13 +127,14 @@ def build_mondo_index(data_file="data/mondo_train.csv", output_dir="models"):
     print(f"Saving MONDO labels to {labels_file}")
     np.save(str(labels_file), np.array(mondo_ids))
     
-    # Save additional metadata
+    # Save additional metadata including the mention mappings
     metadata = {
         'model_name': "cambridgeltl/SapBERT-from-PubMedBERT-fulltext",
         'embedding_dim': embedding_dim,
         'num_entities': len(mondo_ids),
         'max_length': 25,
-        'normalization': 'L2'
+        'normalization': 'L2',
+        'indexing_method': 'representative_mentions'  # New field to indicate the fix
     }
     
     metadata_file = output_path / "sapbert_metadata.txt"
@@ -136,6 +150,7 @@ def build_mondo_index(data_file="data/mondo_train.csv", output_dir="models"):
     print(f"Labels file: {labels_file}")
     print(f"Entities indexed: {len(mondo_ids)}")
     print(f"Embedding dimension: {embedding_dim}")
+    print("🔧 FIXED: Using representative mention text instead of MONDO IDs for embeddings")
     
     return index_file, labels_file
 
