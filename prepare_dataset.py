@@ -79,15 +79,19 @@ print(f"Train: {len(train)} examples ({len(train)/n*100:.1f}%)")
 print(f"Dev:   {len(dev)} examples ({len(dev)/n*100:.1f}%)")
 print(f"Test:  {len(test)} examples ({len(test)/n*100:.1f}%)")
 
+# Create data directory if it doesn't exist
+data_dir = pathlib.Path('data')
+data_dir.mkdir(exist_ok=True)
+
 # Save splits to CSV files
 for split_name, split_df in [('train', train), ('dev', dev), ('test', test)]:
-    filename = f'mondo_{split_name}.csv'
+    filename = data_dir / f'mondo_{split_name}.csv'
     split_df.to_csv(filename, index=False)
     print(f"Saved {filename}")
 
 print("\nDataset preparation complete!")
 print("\nOutput files:")
-print("- mondo_train.csv  (~80%)")
-print("- mondo_dev.csv    (~10%)")
-print("- mondo_test.csv   (~10%)")
-print("\nEach row contains: pmid, mention, cui, mondo_id") 
+print("- data/mondo_train.csv  (~80%)")
+print("- data/mondo_dev.csv    (~10%)")
+print("- data/mondo_test.csv   (~10%)")
+print("\nEach row contains: pmid, mention, cui, mondo_id")
