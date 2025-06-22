@@ -1,0 +1,28 @@
+name: biomap-env
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python>=3.8
+  - pandas
+  - tqdm
+  - scikit-learn
+  - sentencepiece
+  
+  # PyTorch with MPS support for Apple Silicon
+  - pytorch>=2.0
+  - torchvision
+  - torchaudio
+  
+  # Transformers and related
+  - transformers>=4.40
+  - datasets
+  
+  # Pip dependencies (includes FAISS to avoid MKL issues on Mac)
+  - pip
+  - pip:
+    - faiss-cpu
+    - openai
+    - google-generativeai 
