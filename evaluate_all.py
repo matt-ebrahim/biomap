@@ -21,6 +21,8 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import List, Dict, Tuple
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 # Import our custom modules
 try:
@@ -123,21 +125,21 @@ def evaluate_biomegatron(test_df: pd.DataFrame, model_dir: str = "models") -> Di
         print(f"BioMegatron evaluation failed: {e}")
         return {}
 
-def evaluate_llm_ranking(test_df: pd.DataFrame, 
-                        model: str = "gpt", 
-                        max_candidates: int = 50,
-                        top_k: int = 10) -> Dict[str, float]:
+def evaluate_llm_ranking_parallel(test_df: pd.DataFrame, 
+                                 model: str = "gpt", 
+                                 top_k: int = 10,
+                                 max_workers: int = 8) -> Dict[str, float]:
     """
-    Evaluate LLM-based ranking approach.
+    Evaluate LLM-based ranking approach with parallel processing.
     
     Args:
         test_df: Test dataframe
         model: "gpt" or "gemini"
-        max_candidates: Maximum candidates to evaluate (for cost control)
         top_k: Number of top predictions to return
+        max_workers: Number of parallel threads
     """
     print(f"\n" + "="*50)
-    print(f"🤖 Evaluating {model.upper()} Zero-shot Ranking")
+    print(f"🤖 Evaluating {model.upper()} Zero-shot Ranking (Parallel)")
     print("="*50)
     
     try:
@@ -151,30 +153,46 @@ def evaluate_llm_ranking(test_df: pd.DataFrame,
             all_candidates = sorted(train_df['mondo_id'].unique())
         
         print(f"Loaded {len(all_candidates)} MONDO candidates")
-        print(f"Will evaluate top {max_candidates} candidates per mention for cost control")
+        print(f"Using {max_workers} parallel threads for evaluation")
         
-        ranked_lists = []
-        
-        for mention in tqdm(test_df['mention'], desc=f"{model.upper()} ranking"):
-            # Limit candidates for cost control
-            test_candidates = all_candidates[:max_candidates]
+        def evaluate_single_mention(mention_data):
+            """Evaluate a single mention against all candidates."""
+            mention, gt_mondo = mention_data
             
-            scores = []
-            for candidate in test_candidates:
+            def evaluate_pair(candidate):
                 try:
                     is_equivalent, explanation = llm_link(mention, candidate, model)
-                    score = 1.0 if is_equivalent else 0.0
-                    scores.append(score)
+                    return candidate, 1.0 if is_equivalent else 0.0
                 except Exception as e:
                     print(f"Error evaluating {mention} -> {candidate}: {e}")
-                    scores.append(0.0)
+                    return candidate, 0.0
+            
+            # Use thread pool for each mention's candidates
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(all_candidates))) as executor:
+                future_to_candidate = {executor.submit(evaluate_pair, candidate): candidate 
+                                     for candidate in all_candidates}
+                
+                scores = {}
+                for future in as_completed(future_to_candidate):
+                    candidate, score = future.result()
+                    scores[candidate] = score
             
             # Rank by scores (descending)
-            scores_array = np.array(scores)
-            ranked_indices = np.argsort(-scores_array)
-            ranked_list = [test_candidates[i] for i in ranked_indices[:top_k]]
+            ranked_candidates = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+            ranked_list = [candidate for candidate, score in ranked_candidates[:top_k]]
             
-            ranked_lists.append(ranked_list)
+            return ranked_list
+        
+        # Prepare mention data
+        mention_data = list(zip(test_df['mention'], test_df['mondo_id']))
+        
+        # Process all mentions
+        ranked_lists = []
+        with tqdm(total=len(mention_data), desc=f"{model.upper()} mentions") as pbar:
+            for mention_item in mention_data:
+                ranked_list = evaluate_single_mention(mention_item)
+                ranked_lists.append(ranked_list)
+                pbar.update(1)
         
         metrics = evaluate_hits_and_mrr(test_df['mondo_id'].tolist(), ranked_lists)
         
@@ -233,8 +251,7 @@ def main():
     parser.add_argument("--models", default="models", help="Models directory")
     parser.add_argument("--output", help="Output JSON file for results")
     parser.add_argument("--max_samples", type=int, help="Limit test samples")
-    parser.add_argument("--llm_candidates", type=int, default=50, 
-                       help="Max MONDO candidates for LLM evaluation (cost control)")
+    parser.add_argument("--max_workers", type=int, default=8, help="Number of parallel threads for LLM evaluation")
     parser.add_argument("--skip_sapbert", action="store_true", help="Skip SapBERT evaluation")
     parser.add_argument("--skip_biomegatron", action="store_true", help="Skip BioMegatron evaluation")
     parser.add_argument("--skip_gpt", action="store_true", help="Skip GPT-4o evaluation")
@@ -284,13 +301,13 @@ def main():
     
     # 3. GPT-4o Zero-shot
     if not args.skip_gpt:
-        gpt_results = evaluate_llm_ranking(test_df, "gpt", args.llm_candidates)
+        gpt_results = evaluate_llm_ranking_parallel(test_df, "gpt", max_workers=args.max_workers)
         if gpt_results:
             results["GPT-4o"] = gpt_results
     
     # 4. Gemini Search-grounded
     if not args.skip_gemini:
-        gemini_results = evaluate_llm_ranking(test_df, "gemini", args.llm_candidates)
+        gemini_results = evaluate_llm_ranking_parallel(test_df, "gemini", max_workers=args.max_workers)
         if gemini_results:
             results["Gemini"] = gemini_results
     

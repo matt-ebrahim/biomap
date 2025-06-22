@@ -642,12 +642,13 @@ The prompts are designed for medical entity linking:
 - Includes ICD classification considerations
 - Leverages medical knowledge base
 
-#### Rate Limiting
+#### Parallel Processing
 
-- **Concurrent requests**: 3 workers maximum
-- **Request delays**: 0.5 seconds between calls
+- **Concurrent requests**: Up to 16 workers (configurable)
+- **Request delays**: Optimized 0.1 seconds between calls
 - **Retry logic**: Exponential backoff for rate limits
-- **Checkpointing**: Every 50 evaluations
+- **Checkpointing**: Every 100 evaluations
+- **Thread-local clients**: Efficient resource management
 
 #### Output Format
 
@@ -698,8 +699,8 @@ python3 evaluate_all.py --max_samples 100
 python3 evaluate_all.py --skip_gpt --skip_gemini  # Skip LLM models
 python3 evaluate_all.py --skip_sapbert --skip_biomegatron  # Skip ML models
 
-# Control LLM cost by limiting candidates
-python3 evaluate_all.py --llm_candidates 20
+# Control parallel processing threads  
+python3 evaluate_all.py --max_workers 16
 
 # Custom output file
 python3 evaluate_all.py --output my_results.json
@@ -709,7 +710,7 @@ python3 evaluate_all.py --output my_results.json
 
 - **Comprehensive metrics**: Hits@1, Hits@3, Hits@5, Hits@10, and MRR
 - **All baselines**: SapBERT, BioMegatron, GPT-4o, and Gemini
-- **Cost control**: Limit LLM candidate evaluation for budget management
+- **High-performance parallel processing**: Optimized multi-threading for LLM evaluation
 - **Flexible options**: Skip specific models or limit test samples
 - **Formatted output**: Comparison table and JSON results
 
@@ -744,22 +745,22 @@ Gemini                  0.4600      0.6200      0.7100      0.8000      0.5650
 
 #### GPT-4o Zero-shot
 - **Approach**: Large language model with medical reasoning
-- **Speed**: Slow (~50 queries per minute due to API limits)
-- **Coverage**: Limited candidates for cost control (default: 50)
+- **Speed**: Optimized with parallel processing (up to 16 concurrent threads)
+- **Coverage**: Complete MONDO entity evaluation
 
 #### Gemini Search-grounded
 - **Approach**: LLM with search capabilities for medical validation
-- **Speed**: Slow (~30 queries per minute)
-- **Coverage**: Limited candidates for cost control (default: 50)
+- **Speed**: Optimized with parallel processing (up to 16 concurrent threads)
+- **Coverage**: Complete MONDO entity evaluation
 
-### Cost Considerations
+### Performance Optimization
 
-LLM evaluations can be expensive. The script provides cost control:
+LLM evaluations are optimized for high-throughput processing:
 
-- **Limited candidates**: Only evaluate top-N MONDO entities (default: 50)
-- **Batch processing**: Efficient API usage with rate limiting
-- **Skip options**: Skip expensive models during development
-- **Sample limits**: Test on subset of data first
+- **Parallel processing**: Multi-threaded evaluation with configurable worker count
+- **Efficient API usage**: Optimized rate limiting and retry logic
+- **Skip options**: Skip specific models during development
+- **Sample limits**: Test on subset of data for quick validation
 
 ### JSON Output Format
 

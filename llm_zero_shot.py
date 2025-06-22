@@ -3,7 +3,8 @@
 Zero-shot LLM evaluation for entity linking.
 
 This script provides a unified interface for both GPT-4o and Gemini models
-to evaluate entity linking accuracy using natural language understanding.
+to evaluate entity linking accuracy using natural language understanding
+with optimized parallel processing for faster evaluation.
 """
 
 import time
@@ -20,6 +21,7 @@ from typing import Dict, Tuple, List
 import json
 import concurrent.futures
 from threading import Lock
+import threading
 
 # Configuration
 OPENAI_CONFIG = {
@@ -33,15 +35,28 @@ GEMINI_CONFIG = {
     "model_name": "gemini-2.5-flash-preview-04-17"
 }
 
-# Rate limiting settings
-MAX_WORKERS = 3
-DELAY_BETWEEN_REQUESTS = 0.5
-CHECKPOINT_FREQUENCY = 50
+# Enhanced parallel processing settings
+MAX_WORKERS = 16
+DELAY_BETWEEN_REQUESTS = 0.1  # Reduced delay for faster processing
+CHECKPOINT_FREQUENCY = 100
 
-# Global clients
+# Global clients with thread-local storage
 openai_client = None
 gemini_client = None
 request_lock = Lock()
+thread_local = threading.local()
+
+def get_openai_client():
+    """Get thread-local OpenAI client."""
+    if not hasattr(thread_local, 'openai_client'):
+        thread_local.openai_client = openai
+    return thread_local.openai_client
+
+def get_gemini_client():
+    """Get thread-local Gemini client."""
+    if not hasattr(thread_local, 'gemini_client'):
+        thread_local.gemini_client = genai.Client(api_key=GEMINI_CONFIG["api_key"])
+    return thread_local.gemini_client
 
 def initialize_clients():
     """Initialize OpenAI and Gemini clients."""
@@ -62,7 +77,7 @@ def initialize_clients():
     gemini_client = genai.Client(api_key=GEMINI_CONFIG["api_key"])
 
 def query_equivalence_gpt(mention: str, mondo_label: str, retries: int = 3) -> str:
-    """Query GPT-4o for entity equivalence."""
+    """Query GPT-4o for entity equivalence with optimized parallel processing."""
     prompt = f"""
 Do the following two terms refer to the same disease concept?
 
@@ -82,12 +97,14 @@ Provide a brief justification in one sentence.
 Format your response as: YES/NO [explanation]
 """
     
+    client = get_openai_client()
+    
     for attempt in range(retries):
         try:
-            with request_lock:
-                time.sleep(DELAY_BETWEEN_REQUESTS)
+            # Minimal delay for parallel processing optimization
+            time.sleep(DELAY_BETWEEN_REQUESTS)
             
-            response = openai_client.chat.completions.create(
+            response = client.chat.completions.create(
                 model=OPENAI_CONFIG["model_name"],
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
@@ -98,8 +115,7 @@ Format your response as: YES/NO [explanation]
             error_msg = str(e).lower()
             
             if "rate" in error_msg or "limit" in error_msg or "429" in error_msg:
-                wait_time = (2 ** attempt) * 5
-                print(f"\nGPT rate limit hit, waiting {wait_time} seconds...")
+                wait_time = (2 ** attempt) * 2  # Reduced backoff
                 time.sleep(wait_time)
             elif attempt < retries - 1:
                 time.sleep(2 ** attempt)
@@ -109,7 +125,7 @@ Format your response as: YES/NO [explanation]
     return "ERROR: Max retries exceeded"
 
 def query_equivalence_gemini(mention: str, mondo_label: str, retries: int = 3) -> str:
-    """Query Gemini for entity equivalence."""
+    """Query Gemini for entity equivalence with optimized parallel processing."""
     prompt = f"""
 You are a medical terminology expert. Please determine if these terms refer to the same disease concept.
 
@@ -128,12 +144,14 @@ Answer with "YES" or "NO", followed by a brief medical explanation.
 Format your response as: YES/NO [explanation]
 """
     
+    client = get_gemini_client()
+    
     for attempt in range(retries):
         try:
-            with request_lock:
-                time.sleep(DELAY_BETWEEN_REQUESTS)
+            # Minimal delay for parallel processing optimization
+            time.sleep(DELAY_BETWEEN_REQUESTS)
             
-            response = gemini_client.models.generate_content(
+            response = client.models.generate_content(
                 model=GEMINI_CONFIG["model_name"],
                 contents=prompt,
                 config=types.GenerateContentConfig(
@@ -158,8 +176,7 @@ Format your response as: YES/NO [explanation]
             error_msg = str(e).lower()
             
             if "rate" in error_msg or "limit" in error_msg or "429" in error_msg or "quota" in error_msg:
-                wait_time = (2 ** attempt) * 5
-                print(f"\nGemini rate limit hit, waiting {wait_time} seconds...")
+                wait_time = (2 ** attempt) * 2  # Reduced backoff
                 time.sleep(wait_time)
             elif attempt < retries - 1:
                 time.sleep(2 ** attempt)
@@ -170,7 +187,7 @@ Format your response as: YES/NO [explanation]
 
 def llm_link(mention: str, mondo_label: str, model: str = "gpt") -> Tuple[bool, str]:
     """
-    Unified function for entity linking using LLMs.
+    Unified function for entity linking using LLMs with parallel processing support.
     
     Args:
         mention: Medical mention text
@@ -196,6 +213,57 @@ def llm_link(mention: str, mondo_label: str, model: str = "gpt") -> Tuple[bool, 
     is_equivalent = response_upper.startswith("YES")
     
     return is_equivalent, response
+
+def parallel_llm_evaluation(mentions: List[str], 
+                           mondo_candidates: List[str], 
+                           model: str = "gpt",
+                           max_workers: int = 16) -> List[List[Tuple[str, float]]]:
+    """
+    Parallel evaluation of multiple mentions against MONDO candidates.
+    
+    Args:
+        mentions: List of medical mentions
+        mondo_candidates: List of MONDO IDs to evaluate against
+        model: "gpt" or "gemini"
+        max_workers: Number of parallel threads
+        
+    Returns:
+        List of ranked results for each mention
+    """
+    print(f"Starting parallel {model.upper()} evaluation with {max_workers} workers")
+    
+    def evaluate_mention_batch(mention_idx):
+        mention = mentions[mention_idx]
+        results = []
+        
+        for candidate in mondo_candidates:
+            try:
+                is_equivalent, explanation = llm_link(mention, candidate, model)
+                score = 1.0 if is_equivalent else 0.0
+                results.append((candidate, score))
+            except Exception as e:
+                results.append((candidate, 0.0))
+        
+        # Sort by score (descending)
+        results.sort(key=lambda x: x[1], reverse=True)
+        return mention_idx, results
+    
+    # Process all mentions in parallel
+    all_results = [None] * len(mentions)
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_idx = {executor.submit(evaluate_mention_batch, i): i 
+                        for i in range(len(mentions))}
+        
+        # Collect results with progress bar
+        with tqdm(total=len(mentions), desc=f"{model.upper()} parallel eval") as pbar:
+            for future in concurrent.futures.as_completed(future_to_idx):
+                mention_idx, results = future.result()
+                all_results[mention_idx] = results
+                pbar.update(1)
+    
+    return all_results
 
 def evaluate_single_mention(args) -> Dict:
     """Evaluate a single mention (for parallel processing)."""
