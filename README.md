@@ -556,6 +556,129 @@ pip install faiss-gpu
 pip install torch transformers tqdm
 ```
 
+### Zero-shot LLM Evaluation
+
+We provide a third baseline using large language models (GPT-4o and Gemini) for zero-shot entity linking evaluation.
+
+#### Setup
+
+The LLM evaluation requires API keys for both OpenAI and Gemini. Set these as environment variables:
+
+```bash
+# Set API keys as environment variables
+export OPENAI_API_KEY="your_openai_api_key_here"
+export GOOGLE_API_KEY="your_google_api_key_here"
+
+# Make environment variables permanent (add to ~/.bashrc or ~/.zshrc)
+echo 'export OPENAI_API_KEY="your_openai_api_key_here"' >> ~/.bashrc
+echo 'export GOOGLE_API_KEY="your_google_api_key_here"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+The script automatically handles rate limiting and error recovery.
+
+**Important**: The script will validate that both environment variables are set before running. If either is missing, it will show an error message.
+
+#### Running LLM Evaluation
+
+```bash
+# Evaluate with GPT-4o
+python3 llm_zero_shot.py --model gpt --test data/mondo_test.csv
+
+# Evaluate with Gemini  
+python3 llm_zero_shot.py --model gemini --test data/mondo_test.csv
+
+# Interactive demo
+python3 llm_zero_shot.py --demo --model gpt
+
+# Limit evaluation to 100 samples
+python3 llm_zero_shot.py --model gpt --max_samples 100
+```
+
+#### Core Function
+
+The main evaluation function provides a unified interface:
+
+```python
+from llm_zero_shot import llm_link, initialize_clients
+
+# Initialize API clients
+initialize_clients()
+
+# Evaluate a single mention-MONDO pair
+is_equivalent, explanation = llm_link("cystic fibrosis", "MONDO:0009061", model="gpt")
+
+print(f"Equivalent: {is_equivalent}")
+print(f"Explanation: {explanation}")
+```
+
+#### Evaluation Features
+
+- **Dual model support**: Both GPT-4o and Gemini models
+- **Parallel processing**: Concurrent API calls with rate limiting
+- **Error handling**: Automatic retry with exponential backoff
+- **Checkpointing**: Saves progress every 50 evaluations
+- **Detailed output**: JSON results with explanations
+
+#### Evaluation Metrics
+
+- **Accuracy**: Percentage of correct equivalence judgments
+- **Error rate**: Proportion of API errors/failures
+- **Detailed explanations**: Natural language reasoning for each decision
+
+#### Prompt Engineering
+
+The prompts are designed for medical entity linking:
+
+**GPT-4o Prompt:**
+- Focuses on clinical equivalents and medical terminology
+- Considers different specificity levels
+- Handles abbreviations and formal terms
+
+**Gemini Prompt:**
+- Emphasizes medical expertise
+- Includes ICD classification considerations
+- Leverages medical knowledge base
+
+#### Rate Limiting
+
+- **Concurrent requests**: 3 workers maximum
+- **Request delays**: 0.5 seconds between calls
+- **Retry logic**: Exponential backoff for rate limits
+- **Checkpointing**: Every 50 evaluations
+
+#### Output Format
+
+Results are saved as JSON with detailed information:
+
+```json
+{
+  "metrics": {
+    "accuracy": 0.85,
+    "total_samples": 100,
+    "correct_predictions": 85,
+    "errors": 2,
+    "error_rate": 0.02,
+    "model": "gpt"
+  },
+  "predictions": [
+    {
+      "mention": "cystic fibrosis",
+      "true_mondo": "MONDO:0009061", 
+      "prediction": true,
+      "explanation": "YES - Both terms refer to the same genetic disorder...",
+      "correct": true
+    }
+  ]
+}
+```
+
+#### Requirements
+
+```bash
+pip install openai google-generativeai pandas tqdm
+```
+
 ## Project Structure
 
 ```
@@ -573,6 +696,7 @@ entity-linking-benchmark/
 ├── inference_biomegatron.py              # BioMegatron inference script
 ├── build_sapbert_index.py                # SapBERT + FAISS index builder
 ├── inference_sapbert.py                  # SapBERT + FAISS inference script
+├── llm_zero_shot.py                      # Zero-shot LLM evaluation (GPT-4o/Gemini)
 ├── data/                                 # Generated benchmark datasets
 │   ├── mondo_train.csv                   # Training split
 │   ├── mondo_dev.csv                     # Development split  
