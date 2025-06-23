@@ -136,7 +136,7 @@ def pair_df(df):
     paired_df = pd.DataFrame(all_pairs)
     
     print(f"Created {len(paired_df)} total pairs ({len(positive_pairs)} positive, {len(negative_pairs)} negative)")
-    print("✅ FIXED: Using proper negative sampling with representative mention text")
+    print("Using proper negative sampling with representative mention text")
     
     # Show examples
     print("\nSample positive pairs:")
@@ -176,16 +176,16 @@ args = TrainingArguments(
     output_dir=str(models_dir / "biomegatron_mondo_cls"),
     per_device_train_batch_size=16,
     per_device_eval_batch_size=16,
-    num_train_epochs=10,  # ✅ INCREASED: More epochs for better convergence
+    num_train_epochs=10,  # More epochs for better convergence
     learning_rate=1e-5,   # Conservative learning rate
     eval_strategy="epoch",
     save_strategy="epoch",
     logging_strategy="steps",
     logging_steps=50,
     save_total_limit=3,   # Keep only 3 best checkpoints to save space
-    load_best_model_at_end=True,        # ✅ FIXED: Load best model at end
-    metric_for_best_model="eval_loss",   # ✅ FIXED: Use eval_loss as metric
-    greater_is_better=False,             # ✅ FIXED: Lower eval_loss is better
+    load_best_model_at_end=True,        # Load best model at end
+    metric_for_best_model="eval_loss",   # Use eval_loss as metric
+    greater_is_better=False,             # Lower eval_loss is better
     report_to=None,
     warmup_steps=100,
     weight_decay=0.01,
@@ -206,7 +206,7 @@ print("Starting training...")
 print(f"Training examples: {len(ds_train)}")
 print(f"Evaluation examples: {len(ds_dev)}")
 print(f"Training for {args.num_train_epochs} epochs")
-print("✅ BEST MODEL will be saved based on LOWEST validation loss")
+print("Best model will be saved based on lowest validation loss")
 
 # Train the model
 trainer.train()
@@ -261,8 +261,8 @@ def create_training_plots():
     plt.savefig(metrics_dir / 'training_validation_loss.pdf', bbox_inches='tight')
     plt.close()
     
-    print(f"✅ Saved: {metrics_dir}/training_validation_loss.png")
-    print(f"✅ Saved: {metrics_dir}/training_validation_loss.pdf")
+    print(f"Saved: {metrics_dir}/training_validation_loss.png")
+    print(f"Saved: {metrics_dir}/training_validation_loss.pdf")
 
 def create_roc_analysis():
     """Create ROC curve analysis on validation data."""
@@ -332,8 +332,8 @@ def create_roc_analysis():
     plt.savefig(metrics_dir / 'roc_curve.pdf', bbox_inches='tight')
     plt.close()
     
-    print(f"✅ Saved: {metrics_dir}/roc_curve.png")
-    print(f"✅ Saved: {metrics_dir}/roc_curve.pdf")
+    print(f"Saved: {metrics_dir}/roc_curve.png")
+    print(f"Saved: {metrics_dir}/roc_curve.pdf")
     
     # Classification report
     binary_predictions = (predictions > 0.5).astype(int)
@@ -356,7 +356,7 @@ def create_roc_analysis():
     with open(metrics_dir / 'metrics_summary.json', 'w') as f:
         json.dump(metrics_summary, f, indent=2)
     
-    print(f"✅ Saved: {metrics_dir}/metrics_summary.json")
+    print(f"Saved: {metrics_dir}/metrics_summary.json")
     
     return roc_auc, class_report
 
@@ -367,31 +367,23 @@ roc_auc, class_report = create_roc_analysis()
 print("\n" + "="*60)
 print("TRAINING COMPLETED SUCCESSFULLY!")
 print("="*60)
-print(f"✅ BEST model saved: {final_model_path}")
-print(f"✅ All metrics saved: {metrics_dir}")
-print(f"\n📊 MODEL PERFORMANCE SUMMARY:")
-print(f"   • ROC AUC Score: {roc_auc:.4f}")
-if metrics_callback.validation_loss:
-    best_val_loss = min(metrics_callback.validation_loss)
-    best_epoch = metrics_callback.epochs[np.argmin(metrics_callback.validation_loss)]
-    print(f"   • Best Validation Loss: {best_val_loss:.4f} (Epoch {best_epoch:.1f})")
-print(f"   • Training Epochs: {args.num_train_epochs}")
-print(f"\n📁 GENERATED FILES:")
-print(f"   • training_validation_loss.png/pdf - Loss curves")  
-print(f"   • roc_curve.png/pdf - ROC analysis")
-print(f"   • metrics_summary.json - Complete metrics")
+print(f"Best model saved: {final_model_path}")
+print(f"All metrics saved: {metrics_dir}")
+print(f"\nMODEL PERFORMANCE SUMMARY:")
+for metric, value in final_metrics.items():
+    if isinstance(value, float):
+        print(f"  {metric}: {value:.4f}")
+    else:
+        print(f"  {metric}: {value}")
 
-print(f"\n🎯 EPOCH SELECTION RATIONALE:")
-print(f"   • 10 epochs chosen for comprehensive training")
-print(f"   • Early stopping via best model selection prevents overfitting")
-print(f"   • Validation loss monitoring ensures optimal generalization")
-print(f"   • Conservative learning rate (1e-5) allows stable convergence")
+print(f"  Best Epoch: {trainer.state.best_model_checkpoint}")
+print(f"  Final Validation Loss: {trainer.state.best_metric:.4f}")
 
-print("\n🚀 PRODUCTION-READY FEATURES:")
-print("   • High-resolution plots (300 DPI)")
-print("   • PDF and PNG formats for flexibility") 
-print("   • Comprehensive metrics tracking")
-print("   • Best model selection (not final epoch)")
-print("   • Professional visualization styling")
-
-print("🔧 FIXED: Proper negative sampling and representative text usage") 
+print("\nPRODUCTION-READY FEATURES:")
+print("- Comprehensive metrics tracking and visualization")
+print("- Best model selection based on validation loss")
+print("- ROC curve analysis and performance metrics")
+print("- Detailed training logs and checkpoints")
+print("- High-resolution visualizations (300 DPI)")
+print("- JSON metrics export for further analysis")
+print("Proper negative sampling and representative text usage") 

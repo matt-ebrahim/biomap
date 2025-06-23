@@ -10,8 +10,8 @@ with optimized parallel processing for faster evaluation.
 import time
 import os
 import openai
-import google.generativeai as genai
-from google.ai.generativelanguage_v1beta import types
+from google import genai
+from google.genai import types
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -23,15 +23,15 @@ import concurrent.futures
 from threading import Lock
 import threading
 
-# Configuration
+# Configuration - Updated to match your working examples
 OPENAI_CONFIG = {
-    "api_key": os.getenv("OPENAI_API_KEY"),
+    "api_key": os.getenv("OPENAI_API_KEY", "sk-mN4RQgdN886QbidYh_-D_w"),
     "base_url": "https://llmgateway.experiment.trialspark.com",
     "model_name": "gpt-4o"
 }
 
 GEMINI_CONFIG = {
-    "api_key": os.getenv("GOOGLE_API_KEY"),
+    "api_key": os.getenv("GOOGLE_API_KEY", "AIzaSyDQNKpdcH8RYDfy8WfBS3QOucRF4EwUIVk"),
     "model_name": "gemini-2.5-flash-preview-04-17"
 }
 
@@ -53,27 +53,27 @@ def get_openai_client():
     return thread_local.openai_client
 
 def get_gemini_client():
-    """Get thread-local Gemini client."""
+    """Get thread-local Gemini client (exactly matching your working pattern)."""
     if not hasattr(thread_local, 'gemini_client'):
         thread_local.gemini_client = genai.Client(api_key=GEMINI_CONFIG["api_key"])
     return thread_local.gemini_client
 
 def initialize_clients():
-    """Initialize OpenAI and Gemini clients."""
+    """Initialize OpenAI and Gemini clients exactly matching your working examples."""
     global openai_client, gemini_client
     
-    # Validate environment variables
+    # Validate API keys
     if not OPENAI_CONFIG["api_key"]:
-        raise ValueError("OPENAI_API_KEY environment variable not set")
+        raise ValueError("OPENAI_API_KEY not configured")
     if not GEMINI_CONFIG["api_key"]:
-        raise ValueError("GOOGLE_API_KEY environment variable not set")
+        raise ValueError("GOOGLE_API_KEY not configured")
     
-    # Initialize OpenAI
+    # Initialize OpenAI (exactly matching your working example)
     openai.api_key = OPENAI_CONFIG["api_key"]
     openai.base_url = OPENAI_CONFIG["base_url"]
     openai_client = openai
     
-    # Initialize Gemini
+    # Initialize Gemini (exactly matching your working example)
     gemini_client = genai.Client(api_key=GEMINI_CONFIG["api_key"])
 
 def query_equivalence_gpt(mention: str, mondo_label: str, retries: int = 3) -> str:
@@ -101,8 +101,8 @@ Format your response as: YES/NO [explanation]
     
     for attempt in range(retries):
         try:
-            # Minimal delay for parallel processing optimization
-            time.sleep(DELAY_BETWEEN_REQUESTS)
+            # Brief delay between API calls
+            time.sleep(0.1)
             
             response = client.chat.completions.create(
                 model=OPENAI_CONFIG["model_name"],
@@ -125,7 +125,7 @@ Format your response as: YES/NO [explanation]
     return "ERROR: Max retries exceeded"
 
 def query_equivalence_gemini(mention: str, mondo_label: str, retries: int = 3) -> str:
-    """Query Gemini for entity equivalence with optimized parallel processing."""
+    """Query Gemini for entity equivalence (exactly matching your working example)."""
     prompt = f"""
 You are a medical terminology expert. Please determine if these terms refer to the same disease concept.
 
@@ -148,9 +148,10 @@ Format your response as: YES/NO [explanation]
     
     for attempt in range(retries):
         try:
-            # Minimal delay for parallel processing optimization
-            time.sleep(DELAY_BETWEEN_REQUESTS)
+            # Brief delay between API calls
+            time.sleep(0.1)
             
+            # Exactly matching your working example
             response = client.models.generate_content(
                 model=GEMINI_CONFIG["model_name"],
                 contents=prompt,
@@ -176,7 +177,7 @@ Format your response as: YES/NO [explanation]
             error_msg = str(e).lower()
             
             if "rate" in error_msg or "limit" in error_msg or "429" in error_msg or "quota" in error_msg:
-                wait_time = (2 ** attempt) * 2  # Reduced backoff
+                wait_time = (2 ** attempt) * 5  # Matching your example timing
                 time.sleep(wait_time)
             elif attempt < retries - 1:
                 time.sleep(2 ** attempt)

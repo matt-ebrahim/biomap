@@ -74,7 +74,7 @@ def evaluate_hits_and_mrr(ground_truth: List[str],
 def evaluate_sapbert(test_df: pd.DataFrame, model_dir: str = "models") -> Dict[str, float]:
     """Evaluate SapBERT + FAISS approach."""
     print("\n" + "="*50)
-    print("🔍 Evaluating SapBERT + FAISS")
+    print("Evaluating SapBERT + FAISS")
     print("="*50)
     
     try:
@@ -101,7 +101,7 @@ def evaluate_sapbert(test_df: pd.DataFrame, model_dir: str = "models") -> Dict[s
 def evaluate_biomegatron(test_df: pd.DataFrame, model_dir: str = "models") -> Dict[str, float]:
     """Evaluate BioMegatron classifier approach with optimized batch processing."""
     print("\n" + "="*50)
-    print("🧠 Evaluating BioMegatron Classifier (Optimized)")
+    print("Evaluating BioMegatron Classifier")
     print("="*50)
     
     try:
@@ -132,18 +132,18 @@ def evaluate_biomegatron(test_df: pd.DataFrame, model_dir: str = "models") -> Di
 def evaluate_llm_ranking_parallel(test_df: pd.DataFrame, 
                                  model: str = "gpt", 
                                  top_k: int = 10,
-                                 max_workers: int = 8) -> Dict[str, float]:
+                                 max_workers: int = None) -> Dict[str, float]:
     """
-    Evaluate LLM-based ranking approach with parallel processing.
+    Evaluate LLM-based ranking approach with full candidate set and parallel processing.
     
     Args:
         test_df: Test dataframe
         model: "gpt" or "gemini"
         top_k: Number of top predictions to return
-        max_workers: Number of parallel threads
+        max_workers: Number of parallel threads (None = use all available cores)
     """
     print(f"\n" + "="*50)
-    print(f"🤖 Evaluating {model.upper()} Zero-shot Ranking (Parallel)")
+    print(f"Evaluating {model.upper()} Zero-shot Ranking")
     print("="*50)
     
     try:
@@ -156,8 +156,24 @@ def evaluate_llm_ranking_parallel(test_df: pd.DataFrame,
             train_df = pd.read_csv("data/mondo_train.csv")
             all_candidates = sorted(train_df['mondo_id'].unique())
         
-        print(f"Loaded {len(all_candidates)} MONDO candidates")
-        print(f"Using {max_workers} parallel threads for evaluation")
+        # Create MONDO ID to representative mention text mapping
+        train_df = pd.read_csv("data/mondo_train.csv")
+        mondo_to_mentions = train_df.groupby('mondo_id')['mention'].apply(list).to_dict()
+        mondo_to_text = {}
+        for mondo_id, mentions in mondo_to_mentions.items():
+            # Use most frequent mention as representative
+            mention_counts = pd.Series(mentions).value_counts()
+            representative_mention = mention_counts.index[0]
+            mondo_to_text[mondo_id] = representative_mention
+        
+        # Use all available CPU cores if not specified
+        if max_workers is None:
+            import multiprocessing
+            max_workers = multiprocessing.cpu_count()
+        
+        print(f"Using all {len(all_candidates)} MONDO candidates")
+        print(f"Parallel processing with {max_workers} workers")
+        print(f"Using representative mention text for LLM evaluation")
         
         def evaluate_single_mention(mention_data):
             """Evaluate a single mention against all candidates."""
@@ -165,14 +181,16 @@ def evaluate_llm_ranking_parallel(test_df: pd.DataFrame,
             
             def evaluate_pair(candidate):
                 try:
-                    is_equivalent, explanation = llm_link(mention, candidate, model)
+                    # Use representative mention text instead of MONDO ID
+                    candidate_text = mondo_to_text.get(candidate, candidate)
+                    is_equivalent, explanation = llm_link(mention, candidate_text, model)
                     return candidate, 1.0 if is_equivalent else 0.0
                 except Exception as e:
                     print(f"Error evaluating {mention} -> {candidate}: {e}")
                     return candidate, 0.0
             
-            # Use thread pool for each mention's candidates
-            with ThreadPoolExecutor(max_workers=min(max_workers, len(all_candidates))) as executor:
+            # Use parallel processing for each mention's candidates
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_candidate = {executor.submit(evaluate_pair, candidate): candidate 
                                      for candidate in all_candidates}
                 
@@ -219,7 +237,7 @@ def save_results(results: Dict[str, Dict[str, float]], output_file: str):
 def print_comparison_table(results: Dict[str, Dict[str, float]]):
     """Print a formatted comparison table of all results."""
     print("\n" + "="*80)
-    print("📊 COMPREHENSIVE EVALUATION RESULTS")
+    print("COMPREHENSIVE EVALUATION RESULTS")
     print("="*80)
     
     if not results:

@@ -150,7 +150,7 @@ def build_mondo_index(data_file="data/mondo_train.csv", output_dir="models"):
     print(f"Labels file: {labels_file}")
     print(f"Entities indexed: {len(mondo_ids)}")
     print(f"Embedding dimension: {embedding_dim}")
-    print("🔧 FIXED: Using representative mention text instead of MONDO IDs for embeddings")
+    print("Using representative mention text instead of MONDO IDs for embeddings")
     
     return index_file, labels_file
 
