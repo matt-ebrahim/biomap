@@ -72,6 +72,7 @@ python -c "import transformers, datasets, faiss; print('All dependencies loaded'
 - Comprehensive metrics tracking and visualization
 - High-resolution plots and ROC curve analysis
 - Professional-grade training pipeline
+- Automatic checkpoint resumption for continued training
 
 ### Scalable LLM Integration
 - Full candidate set evaluation (not limited sampling)
@@ -100,6 +101,23 @@ python build_sapbert_index.py
 ```bash
 # Train BioMegatron classifier
 python train_biomegatron_cls.py
+```
+
+**Checkpoint Resumption**: The training script automatically detects existing checkpoints and offers to resume training. This allows you to:
+- Continue training from the last saved checkpoint
+- Extend training with more epochs
+- Resume interrupted training sessions
+
+Example workflow:
+```bash
+# Initial training run
+python train_biomegatron_cls.py  # Creates checkpoints
+
+# Resume training (will ask for confirmation)
+python train_biomegatron_cls.py  # Detects existing checkpoint at epoch N
+# Output: "Resume training from checkpoint? (y/n)"
+
+# To train longer, increase TARGET_EPOCHS in the script
 ```
 
 ### 4. Run Evaluation

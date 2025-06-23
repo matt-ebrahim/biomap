@@ -8,6 +8,7 @@ This script:
 3. Fine-tunes BioMegatron for ranking MONDO candidates
 4. Saves the BEST model based on validation loss (not final model)
 5. Creates comprehensive training metrics and visualizations
+6. Supports checkpoint resumption for continued training
 """
 
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments
@@ -18,11 +19,13 @@ import torch
 from datasets import Dataset
 import pathlib
 import os
+import json
+import glob
+import re
 from collections import defaultdict
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import roc_curve, auc, classification_report, confusion_matrix
-import json
 
 # Set high-quality matplotlib settings for production plots
 plt.rcParams['figure.dpi'] = 300
@@ -42,14 +45,93 @@ models_dir.mkdir(exist_ok=True)
 metrics_dir = models_dir / "model-metrics"
 metrics_dir.mkdir(exist_ok=True)
 
+def find_latest_checkpoint(checkpoint_dir):
+    """Find the latest checkpoint in the given directory."""
+    checkpoint_pattern = os.path.join(checkpoint_dir, "checkpoint-*")
+    checkpoints = glob.glob(checkpoint_pattern)
+    
+    if not checkpoints:
+        return None, 0
+    
+    # Extract step numbers and find the latest
+    checkpoint_steps = []
+    for checkpoint in checkpoints:
+        match = re.search(r'checkpoint-(\d+)', checkpoint)
+        if match:
+            checkpoint_steps.append((int(match.group(1)), checkpoint))
+    
+    if not checkpoint_steps:
+        return None, 0
+    
+    # Sort by step number and get the latest
+    checkpoint_steps.sort(key=lambda x: x[0])
+    latest_step, latest_checkpoint = checkpoint_steps[-1]
+    
+    # Estimate epoch from trainer state if available
+    trainer_state_file = os.path.join(latest_checkpoint, "trainer_state.json")
+    epoch = 0
+    if os.path.exists(trainer_state_file):
+        with open(trainer_state_file, 'r') as f:
+            state = json.load(f)
+            epoch = int(state.get('epoch', 0))
+    
+    return latest_checkpoint, epoch
+
+def ask_resume_training(checkpoint_path, checkpoint_epoch, target_epochs):
+    """Ask user whether to resume training or start from scratch."""
+    print(f"\nFound existing checkpoint at: {checkpoint_path}")
+    print(f"Checkpoint epoch: {checkpoint_epoch}")
+    print(f"Target epochs: {target_epochs}")
+    
+    if checkpoint_epoch >= target_epochs:
+        print(f"Checkpoint epoch ({checkpoint_epoch}) >= target epochs ({target_epochs})")
+        print("Training is already complete or exceeds target epochs.")
+        return False
+    
+    print(f"Resuming would continue training from epoch {checkpoint_epoch + 1} to {target_epochs}")
+    
+    while True:
+        choice = input("Resume training from checkpoint? (y/n): ").lower().strip()
+        if choice in ['y', 'yes']:
+            return True
+        elif choice in ['n', 'no']:
+            return False
+        else:
+            print("Please enter 'y' for yes or 'n' for no")
+
+# Training configuration
+TARGET_EPOCHS = 10
+CHECKPOINT_DIR = str(models_dir / "biomegatron_mondo_cls")
+
+# Check for existing checkpoints
+latest_checkpoint, checkpoint_epoch = find_latest_checkpoint(CHECKPOINT_DIR)
+resume_from_checkpoint = None
+
+if latest_checkpoint and checkpoint_epoch < TARGET_EPOCHS:
+    if ask_resume_training(latest_checkpoint, checkpoint_epoch, TARGET_EPOCHS):
+        resume_from_checkpoint = latest_checkpoint
+        print(f"Will resume training from {latest_checkpoint}")
+    else:
+        print("Starting training from scratch")
+elif latest_checkpoint and checkpoint_epoch >= TARGET_EPOCHS:
+    print(f"Training already completed ({checkpoint_epoch} epochs >= {TARGET_EPOCHS} target epochs)")
+    print("If you want to train more epochs, increase TARGET_EPOCHS in the script")
+    exit(0)
+
 print("Loading BioMegatron tokenizer and model...")
 # Use community-uploaded BioMegatron model
 model_name = "EMBO/BioMegatron345mUncased"
 tok = AutoTokenizer.from_pretrained(model_name)
-model = AutoModelForSequenceClassification.from_pretrained(
-    model_name, 
-    num_labels=1  # regression score for ranking
-)
+
+# Load model from checkpoint if resuming, otherwise from pretrained
+if resume_from_checkpoint:
+    print(f"Loading model from checkpoint: {resume_from_checkpoint}")
+    model = AutoModelForSequenceClassification.from_pretrained(resume_from_checkpoint)
+else:
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name, 
+        num_labels=1  # regression score for ranking
+    )
 
 class MetricsCallback(TrainerCallback):
     """Custom callback to track training metrics for visualization."""
@@ -171,12 +253,11 @@ ds_dev = Dataset.from_pandas(dev).map(tokenize, batched=True)
 metrics_callback = MetricsCallback()
 
 # Training arguments with BEST MODEL SAVING based on eval_loss
-# Increased to 10 epochs for more comprehensive training
 args = TrainingArguments(
-    output_dir=str(models_dir / "biomegatron_mondo_cls"),
+    output_dir=CHECKPOINT_DIR,
     per_device_train_batch_size=16,
     per_device_eval_batch_size=16,
-    num_train_epochs=10,  # More epochs for better convergence
+    num_train_epochs=TARGET_EPOCHS,
     learning_rate=1e-5,   # Conservative learning rate
     eval_strategy="epoch",
     save_strategy="epoch",
@@ -202,14 +283,19 @@ trainer = Trainer(
     callbacks=[metrics_callback]  # Add metrics tracking
 )
 
-print("Starting training...")
-print(f"Training examples: {len(ds_train)}")
-print(f"Evaluation examples: {len(ds_dev)}")
-print(f"Training for {args.num_train_epochs} epochs")
+if resume_from_checkpoint:
+    print(f"Starting training from checkpoint: {resume_from_checkpoint}")
+    print(f"Resuming from epoch {checkpoint_epoch + 1} to {TARGET_EPOCHS}")
+else:
+    print("Starting training from scratch...")
+    print(f"Training examples: {len(ds_train)}")
+    print(f"Evaluation examples: {len(ds_dev)}")
+    print(f"Training for {args.num_train_epochs} epochs")
+
 print("Best model will be saved based on lowest validation loss")
 
 # Train the model
-trainer.train()
+trainer.train(resume_from_checkpoint=resume_from_checkpoint)
 
 # Save the final model (which is actually the BEST model due to load_best_model_at_end=True)
 final_model_path = models_dir / "biomegatron_mondo_cls_final"
@@ -350,7 +436,9 @@ def create_roc_analysis():
         'classification_report': class_report,
         'training_epochs': args.num_train_epochs,
         'total_training_samples': len(ds_train),
-        'total_validation_samples': len(ds_dev)
+        'total_validation_samples': len(ds_dev),
+        'resumed_from_checkpoint': resume_from_checkpoint is not None,
+        'checkpoint_path': resume_from_checkpoint if resume_from_checkpoint else None
     }
     
     with open(metrics_dir / 'metrics_summary.json', 'w') as f:
@@ -369,6 +457,15 @@ print("TRAINING COMPLETED SUCCESSFULLY!")
 print("="*60)
 print(f"Best model saved: {final_model_path}")
 print(f"All metrics saved: {metrics_dir}")
+
+# Get final metrics from classification report
+final_metrics = {
+    'roc_auc': roc_auc,
+    'precision': class_report['weighted avg']['precision'],
+    'recall': class_report['weighted avg']['recall'],
+    'f1_score': class_report['weighted avg']['f1-score']
+}
+
 print(f"\nMODEL PERFORMANCE SUMMARY:")
 for metric, value in final_metrics.items():
     if isinstance(value, float):
@@ -379,6 +476,9 @@ for metric, value in final_metrics.items():
 print(f"  Best Epoch: {trainer.state.best_model_checkpoint}")
 print(f"  Final Validation Loss: {trainer.state.best_metric:.4f}")
 
+if resume_from_checkpoint:
+    print(f"  Resumed from: {resume_from_checkpoint}")
+
 print("\nPRODUCTION-READY FEATURES:")
 print("- Comprehensive metrics tracking and visualization")
 print("- Best model selection based on validation loss")
@@ -386,4 +486,5 @@ print("- ROC curve analysis and performance metrics")
 print("- Detailed training logs and checkpoints")
 print("- High-resolution visualizations (300 DPI)")
 print("- JSON metrics export for further analysis")
-print("Proper negative sampling and representative text usage") 
+print("- Proper negative sampling and representative text usage")
+print("- Checkpoint resumption for continued training") 
