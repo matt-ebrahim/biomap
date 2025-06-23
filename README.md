@@ -432,15 +432,43 @@ python3 train_biomegatron_cls.py
    - **Negative pairs**: mention + [SEP] + different_representative_text (label=0.0)
    - **✅ FIXED**: Uses proper negative sampling to ensure negatives are truly incorrect
 4. **Fine-tunes for regression**: Model learns to score mention-text pairs semantically
-5. **Saves trained model**: Stores in `models/biomegatron_mondo_cls_final/`
+5. **Tracks comprehensive metrics**: Loss curves, ROC analysis, and performance statistics
+6. **Saves BEST model**: Stores checkpoint with lowest validation loss (not final epoch)
+7. **Generates production visualizations**: High-resolution plots and detailed analytics
+
+**Epoch Selection Rationale:**
+- **10 epochs chosen** for comprehensive training without overfitting
+- **Best model selection** prevents overfitting via validation loss monitoring
+- **Conservative learning rate** (1e-5) allows stable convergence over more epochs
+- **Early stopping mechanism** ensures optimal generalization performance
 
 **Training configuration:**
-- **Epochs**: 5 (increased for better learning)
+- **Epochs**: 10 (increased for comprehensive training)
 - **Batch size**: 16 per device
-- **Learning rate**: 1e-5 (reduced for stability)
+- **Learning rate**: 1e-5 (conservative for stable convergence)
 - **Max sequence length**: 64 tokens
-- **Evaluation**: Every epoch with early stopping
-- **Improvements**: Added warmup steps and weight decay for better convergence
+- **Model selection**: BEST model saved based on lowest validation loss (not final epoch)
+- **Early stopping**: Automatic best model selection prevents overfitting
+- **Improvements**: Added warmup steps, weight decay, and comprehensive metrics tracking
+
+**Production-Quality Features:**
+- **📊 Training Metrics**: Comprehensive loss tracking and visualization
+- **📈 ROC Analysis**: Performance evaluation with ROC curves on validation data
+- **📁 Model Metrics Directory**: High-resolution plots (300 DPI) and detailed performance reports
+- **🎯 Best Model Selection**: Saves checkpoint with lowest validation loss, not final epoch
+- **📋 JSON Metrics Export**: Complete training statistics and classification reports
+
+**Generated Outputs:**
+```
+models/
+├── biomegatron_mondo_cls_final/          # Best trained model
+└── model-metrics/                        # Training analytics
+    ├── training_validation_loss.png      # Loss curves (300 DPI)
+    ├── training_validation_loss.pdf      # Vector format
+    ├── roc_curve.png                     # ROC analysis (300 DPI)
+    ├── roc_curve.pdf                     # Vector format
+    └── metrics_summary.json              # Complete metrics
+```
 
 **Note**: Trained models are not included in the git repository due to size constraints. You need to train the model first using the training script above.
 
