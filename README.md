@@ -162,16 +162,24 @@ The framework provides comprehensive evaluation metrics:
 ## API Configuration
 
 ### OpenAI (GPT-4o)
-Set up your API credentials:
-```python
-openai.api_key = "your-api-key"
-openai.base_url = "your-base-url"  # if using custom endpoint
+Set up your API credentials as environment variables:
+```bash
+export OPENAI_API_KEY="your-openai-api-key"
+export OPENAI_BASE_URL="your-base-url"  # Optional, defaults to https://api.openai.com/v1
 ```
 
 ### Google (Gemini)
 Configure Gemini access:
-```python
-genai_client = genai.Client(api_key="your-api-key")
+```bash
+export GOOGLE_API_KEY="your-google-api-key"
+```
+
+### Setting Environment Variables Permanently
+Add to your shell configuration file (`~/.bashrc`, `~/.zshrc`, etc.):
+```bash
+echo 'export OPENAI_API_KEY="your-openai-api-key"' >> ~/.bashrc
+echo 'export GOOGLE_API_KEY="your-google-api-key"' >> ~/.bashrc
+source ~/.bashrc
 ```
 
 ## Command Line Options

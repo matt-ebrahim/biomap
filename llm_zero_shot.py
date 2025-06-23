@@ -23,15 +23,12 @@ import concurrent.futures
 from threading import Lock
 import threading
 
-# Configuration - Updated to match your working examples
+# Configuration - Secure environment-based setup
 OPENAI_CONFIG = {
-    "api_key": os.getenv("OPENAI_API_KEY", "sk-mN4RQgdN886QbidYh_-D_w"),
-    "base_url": "https://llmgateway.experiment.trialspark.com",
     "model_name": "gpt-4o"
 }
 
 GEMINI_CONFIG = {
-    "api_key": os.getenv("GOOGLE_API_KEY", "AIzaSyDQNKpdcH8RYDfy8WfBS3QOucRF4EwUIVk"),
     "model_name": "gemini-2.5-flash-preview-04-17"
 }
 
@@ -49,32 +46,53 @@ thread_local = threading.local()
 def get_openai_client():
     """Get thread-local OpenAI client."""
     if not hasattr(thread_local, 'openai_client'):
-        thread_local.openai_client = openai
+        if not openai_client:
+            raise ValueError("OpenAI client not initialized. Call initialize_clients() first.")
+        thread_local.openai_client = openai_client
     return thread_local.openai_client
 
 def get_gemini_client():
-    """Get thread-local Gemini client (exactly matching your working pattern)."""
+    """Get thread-local Gemini client."""
     if not hasattr(thread_local, 'gemini_client'):
-        thread_local.gemini_client = genai.Client(api_key=GEMINI_CONFIG["api_key"])
+        if not gemini_client:
+            raise ValueError("Gemini client not initialized. Call initialize_clients() first.")
+        thread_local.gemini_client = gemini_client
     return thread_local.gemini_client
 
 def initialize_clients():
-    """Initialize OpenAI and Gemini clients exactly matching your working examples."""
+    """Initialize OpenAI and Gemini clients with API keys from environment variables."""
     global openai_client, gemini_client
     
-    # Validate API keys
-    if not OPENAI_CONFIG["api_key"]:
-        raise ValueError("OPENAI_API_KEY not configured")
-    if not GEMINI_CONFIG["api_key"]:
-        raise ValueError("GOOGLE_API_KEY not configured")
+    try:
+        # OpenAI Client - Using LiteLLM gateway
+        openai_config = {
+            "api_key": os.getenv("OPENAI_API_KEY"),
+            "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        }
+        
+        # Validate OpenAI configuration
+        if not openai_config["api_key"]:
+            raise ValueError("OPENAI_API_KEY environment variable is required")
+        
+        openai_client = openai.OpenAI(**openai_config)
+        print("OpenAI client initialized successfully")
+        
+    except Exception as e:
+        print(f"Failed to initialize OpenAI client: {e}")
+        openai_client = None
     
-    # Initialize OpenAI (exactly matching your working example)
-    openai.api_key = OPENAI_CONFIG["api_key"]
-    openai.base_url = OPENAI_CONFIG["base_url"]
-    openai_client = openai
-    
-    # Initialize Gemini (exactly matching your working example)
-    gemini_client = genai.Client(api_key=GEMINI_CONFIG["api_key"])
+    try:
+        # Gemini Client
+        google_api_key = os.getenv("GOOGLE_API_KEY")
+        if not google_api_key:
+            raise ValueError("GOOGLE_API_KEY environment variable is required")
+            
+        gemini_client = genai.Client(api_key=google_api_key)
+        print("Gemini client initialized successfully")
+        
+    except Exception as e:
+        print(f"Failed to initialize Gemini client: {e}")
+        gemini_client = None
 
 def query_equivalence_gpt(mention: str, mondo_label: str, retries: int = 3) -> str:
     """Query GPT-4o for entity equivalence with optimized parallel processing."""
