@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Train BioMegatron fine-tuned as classifier for entity linking.
+Train biomedical language model fine-tuned as classifier for entity linking.
 
 This script:
-1. Loads mention-MONDO pairs from CSV files
+1. Allows users to choose between different biomedical language models
 2. Creates positive and negative training pairs with proper negative sampling
-3. Fine-tunes BioMegatron for ranking MONDO candidates
+3. Fine-tunes selected model for ranking MONDO candidates
 4. Saves the BEST model based on validation loss (not final model)
 5. Creates comprehensive training metrics and visualizations
 6. Supports checkpoint resumption for continued training
+7. Organizes models by parameter size and type
 """
 
+import argparse
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments
 from transformers import TrainerCallback
 import pandas as pd
@@ -39,11 +41,116 @@ plt.rcParams['legend.fontsize'] = 10
 plt.rcParams['figure.titlesize'] = 16
 sns.set_style("whitegrid")
 
-# Create directories
-models_dir = pathlib.Path('models')
-models_dir.mkdir(exist_ok=True)
-metrics_dir = models_dir / "model-metrics"
-metrics_dir.mkdir(exist_ok=True)
+# Model configurations for different biomedical language models
+BIOMEDICAL_MODELS = {
+    "biomegatron-345m": {
+        "model_name": "EMBO/BioMegatron345mUncased",
+        "display_name": "BioMegatron 345M",
+        "parameters": "345m",
+        "description": "BioMegatron 345M parameters, pretrained on PubMed abstracts and full-text articles",
+        "verified": True
+    },
+    "clinical-bert": {
+        "model_name": "emilyalsentzer/Bio_ClinicalBERT",
+        "display_name": "Clinical BERT",
+        "parameters": "110m",
+        "description": "Clinical BERT pretrained on clinical notes and biomedical text",
+        "verified": True
+    },
+    "pubmed-bert": {
+        "model_name": "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract",
+        "display_name": "PubMed BERT",
+        "parameters": "110m", 
+        "description": "BERT pretrained on PubMed abstracts",
+        "verified": True
+    },
+    "biobert": {
+        "model_name": "dmis-lab/biobert-base-cased-v1.1",
+        "display_name": "BioBERT",
+        "parameters": "110m",
+        "description": "BioBERT pretrained on PubMed and PMC articles",
+        "verified": True
+    },
+    "biomistral-7b": {
+        "model_name": "BioMistral/BioMistral-7B",
+        "display_name": "BioMistral 7B",
+        "parameters": "7b",
+        "description": "BioMistral 7B parameters, medical domain LLM based on Mistral",
+        "verified": True
+    }
+}
+
+def get_model_parameters_count(model):
+    """Get the actual number of parameters from a loaded model."""
+    try:
+        return sum(p.numel() for p in model.parameters())
+    except:
+        return None
+
+def format_parameter_count(param_count):
+    """Format parameter count to human readable string."""
+    if param_count is None:
+        return "unknown"
+    
+    if param_count >= 1e9:
+        return f"{param_count/1e9:.1f}B"
+    elif param_count >= 1e6:
+        return f"{param_count/1e6:.0f}M"
+    elif param_count >= 1e3:
+        return f"{param_count/1e3:.0f}K"
+    else:
+        return str(param_count)
+
+def verify_model_availability(model_key):
+    """Verify if a model is available on HuggingFace."""
+    if model_key not in BIOMEDICAL_MODELS:
+        return False
+    
+    model_info = BIOMEDICAL_MODELS[model_key]
+    if not model_info.get("verified", False):
+        print(f"⚠️  Warning: {model_info['display_name']} availability not verified")
+        return False
+    
+    try:
+        from transformers import AutoTokenizer
+        # Quick check if model exists
+        AutoTokenizer.from_pretrained(model_info["model_name"])
+        return True
+    except Exception as e:
+        print(f"❌ Error: Could not load {model_info['display_name']}: {e}")
+        return False
+
+def list_available_models():
+    """List all available biomedical models with their details."""
+    print("\n🔬 Available Biomedical Language Models:")
+    print("=" * 80)
+    
+    for key, info in BIOMEDICAL_MODELS.items():
+        status = "✅ Verified" if info.get("verified", False) else "⚠️  Unverified"
+        print(f"\n📋 Model ID: {key}")
+        print(f"   Name: {info['display_name']}")
+        print(f"   Parameters: {info['parameters']}")
+        print(f"   Status: {status}")
+        print(f"   Description: {info['description']}")
+        print(f"   HuggingFace: {info['model_name']}")
+    
+    print("\n" + "=" * 80)
+    print("💡 Note: BioMegatron 800M and 1.2B variants exist but may not be publicly available on HuggingFace")
+    print("💡 For larger models, consider BioMistral-7B which is readily available and well-performing")
+    print("=" * 80)
+
+def create_model_directory_name(model_info, actual_params=None):
+    """Create directory name based on model info."""
+    if actual_params:
+        param_str = format_parameter_count(actual_params).lower()
+    else:
+        param_str = model_info['parameters']
+    
+    # Extract base model name (remove organization prefix)
+    base_name = model_info['model_name'].split('/')[-1].lower()
+    base_name = re.sub(r'[^a-z0-9]', '_', base_name)
+    
+    return f"models_{param_str}_{base_name}"
 
 def find_latest_checkpoint(checkpoint_dir):
     """Find the latest checkpoint in the given directory."""
@@ -98,40 +205,6 @@ def ask_resume_training(checkpoint_path, checkpoint_epoch, target_epochs):
             return False
         else:
             print("Please enter 'y' for yes or 'n' for no")
-
-# Training configuration
-TARGET_EPOCHS = 10
-CHECKPOINT_DIR = str(models_dir / "biomegatron_mondo_cls")
-
-# Check for existing checkpoints
-latest_checkpoint, checkpoint_epoch = find_latest_checkpoint(CHECKPOINT_DIR)
-resume_from_checkpoint = None
-
-if latest_checkpoint and checkpoint_epoch < TARGET_EPOCHS:
-    if ask_resume_training(latest_checkpoint, checkpoint_epoch, TARGET_EPOCHS):
-        resume_from_checkpoint = latest_checkpoint
-        print(f"Will resume training from {latest_checkpoint}")
-    else:
-        print("Starting training from scratch")
-elif latest_checkpoint and checkpoint_epoch >= TARGET_EPOCHS:
-    print(f"Training already completed ({checkpoint_epoch} epochs >= {TARGET_EPOCHS} target epochs)")
-    print("If you want to train more epochs, increase TARGET_EPOCHS in the script")
-    exit(0)
-
-print("Loading BioMegatron tokenizer and model...")
-# Use community-uploaded BioMegatron model
-model_name = "EMBO/BioMegatron345mUncased"
-tok = AutoTokenizer.from_pretrained(model_name)
-
-# Load model from checkpoint if resuming, otherwise from pretrained
-if resume_from_checkpoint:
-    print(f"Loading model from checkpoint: {resume_from_checkpoint}")
-    model = AutoModelForSequenceClassification.from_pretrained(resume_from_checkpoint)
-else:
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_name, 
-        num_labels=1  # regression score for ranking
-    )
 
 class MetricsCallback(TrainerCallback):
     """Custom callback to track training metrics for visualization."""
@@ -231,11 +304,6 @@ def pair_df(df):
     
     return paired_df
 
-# Load and prepare training data
-print("Loading training and development datasets...")
-train = pair_df(pd.read_csv('data/mondo_train.csv'))
-dev = pair_df(pd.read_csv('data/mondo_dev.csv'))
-
 def tokenize(batch):
     """Tokenize input pairs for the model."""
     return tok(
@@ -245,69 +313,7 @@ def tokenize(batch):
         max_length=64  # Keep sequences short for efficiency
     )
 
-print("Tokenizing datasets...")
-ds_train = Dataset.from_pandas(train).map(tokenize, batched=True)
-ds_dev = Dataset.from_pandas(dev).map(tokenize, batched=True)
-
-# Initialize metrics callback
-metrics_callback = MetricsCallback()
-
-# Training arguments with BEST MODEL SAVING based on eval_loss
-args = TrainingArguments(
-    output_dir=CHECKPOINT_DIR,
-    per_device_train_batch_size=16,
-    per_device_eval_batch_size=16,
-    num_train_epochs=TARGET_EPOCHS,
-    learning_rate=1e-5,   # Conservative learning rate
-    eval_strategy="epoch",
-    save_strategy="epoch",
-    logging_strategy="steps",
-    logging_steps=50,
-    save_total_limit=3,   # Keep only 3 best checkpoints to save space
-    load_best_model_at_end=True,        # Load best model at end
-    metric_for_best_model="eval_loss",   # Use eval_loss as metric
-    greater_is_better=False,             # Lower eval_loss is better
-    report_to=None,
-    warmup_steps=100,
-    weight_decay=0.01,
-    dataloader_pin_memory=False,  # Disable pin_memory for MPS compatibility
-)
-
-print("Initializing trainer...")
-trainer = Trainer(
-    model=model,
-    args=args,
-    train_dataset=ds_train.remove_columns(['input']),
-    eval_dataset=ds_dev.remove_columns(['input']),
-    tokenizer=tok,
-    callbacks=[metrics_callback]  # Add metrics tracking
-)
-
-if resume_from_checkpoint:
-    print(f"Starting training from checkpoint: {resume_from_checkpoint}")
-    print(f"Resuming from epoch {checkpoint_epoch + 1} to {TARGET_EPOCHS}")
-else:
-    print("Starting training from scratch...")
-    print(f"Training examples: {len(ds_train)}")
-    print(f"Evaluation examples: {len(ds_dev)}")
-    print(f"Training for {args.num_train_epochs} epochs")
-
-print("Best model will be saved based on lowest validation loss")
-
-# Train the model
-trainer.train(resume_from_checkpoint=resume_from_checkpoint)
-
-# Save the final model (which is actually the BEST model due to load_best_model_at_end=True)
-final_model_path = models_dir / "biomegatron_mondo_cls_final"
-print(f"Saving BEST model (lowest eval_loss) to {final_model_path}")
-trainer.save_model(str(final_model_path))
-
-# Generate comprehensive metrics and visualizations
-print("\n" + "="*60)
-print("GENERATING PRODUCTION-QUALITY METRICS & VISUALIZATIONS")
-print("="*60)
-
-def create_training_plots():
+def create_training_plots(metrics_callback, metrics_dir):
     """Create high-quality training and validation loss plots."""
     
     # Training & Validation Loss Plot
@@ -350,7 +356,7 @@ def create_training_plots():
     print(f"Saved: {metrics_dir}/training_validation_loss.png")
     print(f"Saved: {metrics_dir}/training_validation_loss.pdf")
 
-def create_roc_analysis():
+def create_roc_analysis(dev, final_model_path, metrics_dir):
     """Create ROC curve analysis on validation data."""
     
     print("Generating ROC curve analysis...")
@@ -405,7 +411,7 @@ def create_roc_analysis():
     plt.ylim([0.0, 1.05])
     plt.xlabel('False Positive Rate', fontweight='bold')
     plt.ylabel('True Positive Rate', fontweight='bold')
-    plt.title('ROC Curve - BioMegatron Entity Linking Classifier', fontweight='bold', fontsize=16)
+    plt.title('ROC Curve - Biomedical Entity Linking Classifier', fontweight='bold', fontsize=16)
     plt.legend(loc="lower right", fontsize=12)
     plt.grid(True, alpha=0.3)
     
@@ -427,18 +433,166 @@ def create_roc_analysis():
                                        target_names=['Negative', 'Positive'], 
                                        output_dict=True)
     
-    # Save metrics to JSON
+    return roc_auc, class_report
+
+def train_biomedical_classifier(args, model_info):
+    """Main training function for biomedical classifier."""
+    
+    # Load and prepare training data
+    print("\nLoading training and development datasets...")
+    train = pair_df(pd.read_csv('data/mondo_train.csv'))
+    dev = pair_df(pd.read_csv('data/mondo_dev.csv'))
+    
+    print("\nLoading model and tokenizer...")
+    try:
+        global tok
+        tok = AutoTokenizer.from_pretrained(model_info['model_name'])
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_info['model_name'], 
+            num_labels=1  # regression score for ranking
+        )
+        
+        # Get actual parameter count
+        actual_param_count = get_model_parameters_count(model)
+        actual_param_str = format_parameter_count(actual_param_count)
+        
+        print(f"Model loaded successfully!")
+        print(f"Actual parameters: {actual_param_str} ({actual_param_count:,} parameters)")
+        
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        print("Please check if the model is available and accessible.")
+        return
+    
+    # Create directories with model-specific naming
+    models_dir = pathlib.Path('models')
+    models_dir.mkdir(exist_ok=True)
+    
+    # Create model-specific directory
+    model_dir_name = create_model_directory_name(model_info, actual_param_count)
+    model_base_dir = models_dir / model_dir_name
+    model_base_dir.mkdir(exist_ok=True)
+    
+    checkpoint_dir = model_base_dir / "checkpoints"
+    final_model_dir = model_base_dir / "final_model"
+    metrics_dir = model_base_dir / "metrics"
+    metrics_dir.mkdir(exist_ok=True)
+    
+    print(f"Model directory: {model_base_dir}")
+    print(f"Checkpoints: {checkpoint_dir}")
+    print(f"Final model: {final_model_dir}")
+    print(f"Metrics: {metrics_dir}")
+    
+    # Check for existing checkpoints
+    latest_checkpoint, checkpoint_epoch = find_latest_checkpoint(str(checkpoint_dir))
+    resume_from_checkpoint = None
+    
+    if latest_checkpoint and checkpoint_epoch < args.epochs:
+        if ask_resume_training(latest_checkpoint, checkpoint_epoch, args.epochs):
+            resume_from_checkpoint = latest_checkpoint
+            print(f"Will resume training from {latest_checkpoint}")
+        else:
+            print("Starting training from scratch")
+    elif latest_checkpoint and checkpoint_epoch >= args.epochs:
+        print(f"Training already completed ({checkpoint_epoch} epochs >= {args.epochs} target epochs)")
+        print("If you want to train more epochs, increase the --epochs parameter")
+        return
+    
+    print("\nTokenizing datasets...")
+    ds_train = Dataset.from_pandas(train).map(tokenize, batched=True)
+    ds_dev = Dataset.from_pandas(dev).map(tokenize, batched=True)
+    
+    # Initialize metrics callback
+    metrics_callback = MetricsCallback()
+    
+    # Training arguments with BEST MODEL SAVING based on eval_loss
+    args_training = TrainingArguments(
+        output_dir=str(checkpoint_dir),
+        per_device_train_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.batch_size,
+        num_train_epochs=args.epochs,
+        learning_rate=args.learning_rate,
+        eval_strategy="epoch",
+        save_strategy="epoch",
+        logging_strategy="steps",
+        logging_steps=50,
+        save_total_limit=3,   # Keep only 3 best checkpoints to save space
+        load_best_model_at_end=True,        # Load best model at end
+        metric_for_best_model="eval_loss",   # Use eval_loss as metric
+        greater_is_better=False,             # Lower eval_loss is better
+        report_to=None,
+        warmup_steps=args.warmup_steps,
+        weight_decay=0.01,
+        dataloader_pin_memory=False,  # Disable pin_memory for MPS compatibility
+    )
+    
+    print("Initializing trainer...")
+    trainer = Trainer(
+        model=model,
+        args=args_training,
+        train_dataset=ds_train.remove_columns(['input']),
+        eval_dataset=ds_dev.remove_columns(['input']),
+        tokenizer=tok,
+        callbacks=[metrics_callback]  # Add metrics tracking
+    )
+    
+    if resume_from_checkpoint:
+        print(f"Starting training from checkpoint: {resume_from_checkpoint}")
+        print(f"Resuming from epoch {checkpoint_epoch + 1} to {args.epochs}")
+    else:
+        print("Starting training from scratch...")
+        print(f"Training examples: {len(ds_train)}")
+        print(f"Evaluation examples: {len(ds_dev)}")
+        print(f"Training for {args_training.num_train_epochs} epochs")
+    
+    print("Best model will be saved based on lowest validation loss")
+    
+    # Train the model
+    trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+    
+    # Save the final model (which is actually the BEST model due to load_best_model_at_end=True)
+    print(f"Saving BEST model (lowest eval_loss) to {final_model_dir}")
+    trainer.save_model(str(final_model_dir))
+    
+    # Save model metadata
+    model_metadata = {
+        "model_key": args.model,
+        "model_name": model_info['model_name'],
+        "display_name": model_info['display_name'],
+        "description": model_info['description'],
+        "actual_parameters": actual_param_count,
+        "formatted_parameters": actual_param_str,
+        "training_epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "learning_rate": args.learning_rate,
+        "warmup_steps": args.warmup_steps,
+        "max_length": args.max_length,
+        "negative_samples": args.negative_samples,
+        "resumed_from_checkpoint": resume_from_checkpoint is not None,
+        "checkpoint_path": resume_from_checkpoint if resume_from_checkpoint else None
+    }
+    
+    with open(model_base_dir / 'model_info.json', 'w') as f:
+        json.dump(model_metadata, f, indent=2)
+    
+    # Generate comprehensive metrics and visualizations
+    print("\n" + "="*60)
+    print("GENERATING PRODUCTION-QUALITY METRICS & VISUALIZATIONS")
+    print("="*60)
+    
+    create_training_plots(metrics_callback, metrics_dir)
+    roc_auc, class_report = create_roc_analysis(dev, final_model_dir, metrics_dir)
+    
+    # Save metrics summary
     metrics_summary = {
+        'model_info': model_metadata,
         'roc_auc': float(roc_auc),
         'best_epoch': float(metrics_callback.epochs[np.argmin(metrics_callback.validation_loss)]) if metrics_callback.validation_loss else None,
         'best_validation_loss': float(min(metrics_callback.validation_loss)) if metrics_callback.validation_loss else None,
         'final_training_loss': float(metrics_callback.training_loss[-1]) if metrics_callback.training_loss else None,
         'classification_report': class_report,
-        'training_epochs': args.num_train_epochs,
         'total_training_samples': len(ds_train),
         'total_validation_samples': len(ds_dev),
-        'resumed_from_checkpoint': resume_from_checkpoint is not None,
-        'checkpoint_path': resume_from_checkpoint if resume_from_checkpoint else None
     }
     
     with open(metrics_dir / 'metrics_summary.json', 'w') as f:
@@ -446,45 +600,66 @@ def create_roc_analysis():
     
     print(f"Saved: {metrics_dir}/metrics_summary.json")
     
-    return roc_auc, class_report
+    print("\n" + "="*60)
+    print("TRAINING COMPLETED SUCCESSFULLY!")
+    print("="*60)
+    print(f"Model saved to: {final_model_dir}")
+    print(f"Model info: {model_base_dir}/model_info.json")
+    print(f"Metrics: {metrics_dir}/")
+    print(f"ROC AUC: {roc_auc:.4f}")
+    
+    if metrics_callback.validation_loss:
+        best_val_loss = min(metrics_callback.validation_loss)
+        print(f"Best validation loss: {best_val_loss:.4f}")
+    
+    print("="*60)
 
-# Generate all visualizations
-create_training_plots()
-roc_auc, class_report = create_roc_analysis()
+def main():
+    parser = argparse.ArgumentParser(description='Train biomedical language model for entity linking')
+    parser.add_argument('--model', type=str, required=True, 
+                        help='Model to use (e.g., biomegatron-345m, clinical-bert, pubmed-bert, biobert, biomistral-7b)')
+    parser.add_argument('--epochs', type=int, default=30, 
+                        help='Number of training epochs (default: 30)')
+    parser.add_argument('--batch_size', type=int, default=16, 
+                        help='Training batch size (default: 16)')
+    parser.add_argument('--learning_rate', type=float, default=2e-5, 
+                        help='Learning rate (default: 2e-5)')
+    parser.add_argument('--max_length', type=int, default=128, 
+                        help='Maximum sequence length (default: 128)')
+    parser.add_argument('--negative_samples', type=int, default=3,
+                        help='Number of negative samples per positive (default: 3)')
+    parser.add_argument('--warmup_steps', type=int, default=1000,
+                        help='Number of warmup steps (default: 1000)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed (default: 42)')
+    parser.add_argument('--list_models', action='store_true',
+                        help='List available models and exit')
+    
+    args = parser.parse_args()
+    
+    if args.list_models:
+        list_available_models()
+        return
+    
+    # Verify model availability
+    if not verify_model_availability(args.model):
+        print(f"\n❌ Model '{args.model}' is not available or verified.")
+        print("Use --list_models to see available models.")
+        return
+    
+    # Set random seeds for reproducibility
+    set_seed(args.seed)
+    
+    # Get model configuration
+    model_info = BIOMEDICAL_MODELS[args.model]
+    
+    print(f"\n🚀 Starting training with {model_info['display_name']}")
+    print(f"📊 Parameters: {model_info['parameters']}")
+    print(f"🤗 HuggingFace: {model_info['model_name']}")
+    print(f"📝 Description: {model_info['description']}")
+    
+    # Train the model
+    train_biomedical_classifier(args, model_info)
 
-print("\n" + "="*60)
-print("TRAINING COMPLETED SUCCESSFULLY!")
-print("="*60)
-print(f"Best model saved: {final_model_path}")
-print(f"All metrics saved: {metrics_dir}")
-
-# Get final metrics from classification report
-final_metrics = {
-    'roc_auc': roc_auc,
-    'precision': class_report['weighted avg']['precision'],
-    'recall': class_report['weighted avg']['recall'],
-    'f1_score': class_report['weighted avg']['f1-score']
-}
-
-print(f"\nMODEL PERFORMANCE SUMMARY:")
-for metric, value in final_metrics.items():
-    if isinstance(value, float):
-        print(f"  {metric}: {value:.4f}")
-    else:
-        print(f"  {metric}: {value}")
-
-print(f"  Best Epoch: {trainer.state.best_model_checkpoint}")
-print(f"  Final Validation Loss: {trainer.state.best_metric:.4f}")
-
-if resume_from_checkpoint:
-    print(f"  Resumed from: {resume_from_checkpoint}")
-
-print("\nPRODUCTION-READY FEATURES:")
-print("- Comprehensive metrics tracking and visualization")
-print("- Best model selection based on validation loss")
-print("- ROC curve analysis and performance metrics")
-print("- Detailed training logs and checkpoints")
-print("- High-resolution visualizations (300 DPI)")
-print("- JSON metrics export for further analysis")
-print("- Proper negative sampling and representative text usage")
-print("- Checkpoint resumption for continued training") 
+if __name__ == "__main__":
+    main() 

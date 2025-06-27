@@ -37,25 +37,27 @@ MAX_WORKERS = 16
 DELAY_BETWEEN_REQUESTS = 0.1  # Reduced delay for faster processing
 CHECKPOINT_FREQUENCY = 100
 
-# Global clients with thread-local storage
+# Process-local clients (each worker process initializes its own)
 openai_client = None
 gemini_client = None
 request_lock = Lock()
 thread_local = threading.local()
 
 def get_openai_client():
-    """Get thread-local OpenAI client."""
+    """Get process-local OpenAI client, initializing if needed."""
     if not hasattr(thread_local, 'openai_client'):
-        if not openai_client:
-            raise ValueError("OpenAI client not initialized. Call initialize_clients() first.")
+        # Initialize client in this worker process if not already done
+        if openai_client is None:
+            initialize_clients()
         thread_local.openai_client = openai_client
     return thread_local.openai_client
 
 def get_gemini_client():
-    """Get thread-local Gemini client."""
+    """Get process-local Gemini client, initializing if needed."""
     if not hasattr(thread_local, 'gemini_client'):
-        if not gemini_client:
-            raise ValueError("Gemini client not initialized. Call initialize_clients() first.")
+        # Initialize client in this worker process if not already done
+        if gemini_client is None:
+            initialize_clients()
         thread_local.gemini_client = gemini_client
     return thread_local.gemini_client
 
@@ -75,23 +77,23 @@ def initialize_clients():
             raise ValueError("OPENAI_API_KEY environment variable is required")
         
         openai_client = openai.OpenAI(**openai_config)
-        print("OpenAI client initialized successfully")
         
     except Exception as e:
-        print(f"Failed to initialize OpenAI client: {e}")
         openai_client = None
     
     try:
-        # Gemini Client
-        google_api_key = os.getenv("GOOGLE_API_KEY")
+        # Gemini Client - check both possible environment variables
+        google_api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+        
+        if google_api_key and os.getenv("GOOGLE_API_KEY") and os.getenv("GEMINI_API_KEY"):
+            print("Both GOOGLE_API_KEY and GEMINI_API_KEY are set. Using GOOGLE_API_KEY.")
+        
         if not google_api_key:
-            raise ValueError("GOOGLE_API_KEY environment variable is required")
+            raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY environment variable is required")
             
         gemini_client = genai.Client(api_key=google_api_key)
-        print("Gemini client initialized successfully")
         
     except Exception as e:
-        print(f"Failed to initialize Gemini client: {e}")
         gemini_client = None
 
 def query_equivalence_gpt(mention: str, mondo_label: str, retries: int = 3) -> str:

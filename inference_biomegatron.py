@@ -1,22 +1,82 @@
 #!/usr/bin/env python3
 """
-Inference script for BioMegatron entity linking model.
+Inference script for biomedical entity linking models.
 
 This script demonstrates how to:
-1. Load the trained BioMegatron model
+1. Load trained biomedical language models
 2. Rank MONDO candidates for a given mention
 3. Return top-k predictions with optimized batch processing
+4. Support multiple model types and sizes
 """
 
+import argparse
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 import pandas as pd
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
+import json
+import glob
 
-class BioMegatronEntityLinker:
-    def __init__(self, model_path="models/biomegatron_mondo_cls_final", batch_size=64):
+def find_available_models():
+    """Find all available trained models in the models directory."""
+    models_dir = Path("models")
+    available_models = {}
+    
+    if not models_dir.exists():
+        return available_models
+    
+    # Look for model directories with the pattern models_*
+    for model_dir in models_dir.glob("models_*"):
+        if model_dir.is_dir():
+            final_model_path = model_dir / "final_model"
+            model_info_path = model_dir / "model_info.json"
+            
+            if final_model_path.exists():
+                # Load model info if available
+                model_info = {}
+                if model_info_path.exists():
+                    try:
+                        with open(model_info_path, 'r') as f:
+                            model_info = json.load(f)
+                    except:
+                        pass
+                
+                available_models[model_dir.name] = {
+                    "path": final_model_path,
+                    "info": model_info,
+                    "display_name": model_info.get("display_name", model_dir.name),
+                    "parameters": model_info.get("formatted_parameters", "unknown"),
+                    "model_key": model_info.get("model_key", "unknown")
+                }
+    
+    return available_models
+
+def list_available_models():
+    """Print all available trained models."""
+    models = find_available_models()
+    
+    if not models:
+        print("No trained models found in the models/ directory.")
+        print("Please run train_biomegatron_cls.py first to train a model.")
+        return
+    
+    print("\n" + "="*80)
+    print("AVAILABLE TRAINED MODELS")
+    print("="*80)
+    
+    for model_key, model_data in models.items():
+        print(f"\nModel Directory: {model_key}")
+        print(f"  Display Name: {model_data['display_name']}")
+        print(f"  Parameters: {model_data['parameters']}")
+        print(f"  Model Type: {model_data['model_key']}")
+        print(f"  Path: {model_data['path']}")
+    
+    print("\n" + "="*80)
+
+class BiomedicalEntityLinker:
+    def __init__(self, model_path, batch_size=64):
         """Initialize the entity linker with trained model."""
         self.model_path = Path(model_path)
         self.batch_size = batch_size
@@ -129,7 +189,7 @@ class BioMegatronEntityLinker:
         
         print(f"Processing {len(mentions)} mentions with batch size {self.batch_size}")
         
-        for mention in tqdm(mentions, desc="BioMegatron batch inference"):
+        for mention in tqdm(mentions, desc="Biomedical model batch inference"):
             results[mention] = self.predict(mention, top_k)
         
         return results
@@ -140,16 +200,77 @@ class BioMegatronEntityLinker:
 
 def main():
     """Demonstration of the entity linker."""
+    parser = argparse.ArgumentParser(description='Biomedical entity linking inference')
+    parser.add_argument('--model', type=str, 
+                       help='Model directory to use (e.g., models_345m_biomegatron345muncased)')
+    parser.add_argument('--list-models', action='store_true', 
+                       help='List available models and exit')
+    parser.add_argument('--interactive', action='store_true', 
+                       help='Run in interactive mode')
+    parser.add_argument('--batch-size', type=int, default=64, 
+                       help='Batch size for inference (default: 64)')
     
-    # Check if model exists
-    model_path = Path("models/biomegatron_mondo_cls_final")
-    if not model_path.exists():
-        print(f"Error: Model not found at {model_path}")
-        print("Please run train_biomegatron_cls.py first to train the model")
+    args = parser.parse_args()
+    
+    if args.list_models:
+        list_available_models()
         return
     
+    # Find available models
+    available_models = find_available_models()
+    
+    if not available_models:
+        print("No trained models found in the models/ directory.")
+        print("Please run train_biomegatron_cls.py first to train a model.")
+        return
+    
+    # Select model
+    if args.model:
+        if args.model not in available_models:
+            print(f"Error: Model '{args.model}' not found.")
+            print("Available models:")
+            for model_key in available_models.keys():
+                print(f"  - {model_key}")
+            return
+        selected_model = args.model
+    else:
+        # Auto-select the first available model or prompt user
+        if len(available_models) == 1:
+            selected_model = list(available_models.keys())[0]
+            print(f"Auto-selecting the only available model: {selected_model}")
+        else:
+            print("Multiple models available:")
+            model_keys = list(available_models.keys())
+            for i, model_key in enumerate(model_keys):
+                model_data = available_models[model_key]
+                print(f"  {i+1}. {model_key} ({model_data['display_name']}, {model_data['parameters']})")
+            
+            while True:
+                try:
+                    choice = input(f"Select a model (1-{len(model_keys)}): ").strip()
+                    choice_idx = int(choice) - 1
+                    if 0 <= choice_idx < len(model_keys):
+                        selected_model = model_keys[choice_idx]
+                        break
+                    else:
+                        print(f"Please enter a number between 1 and {len(model_keys)}")
+                except (ValueError, KeyboardInterrupt):
+                    print("Invalid selection")
+                    return
+    
+    model_data = available_models[selected_model]
+    model_path = model_data["path"]
+    
+    print(f"\nSelected Model: {model_data['display_name']}")
+    print(f"Parameters: {model_data['parameters']}")
+    print(f"Model Path: {model_path}")
+    
     # Initialize entity linker
-    linker = BioMegatronEntityLinker()
+    try:
+        linker = BiomedicalEntityLinker(model_path, batch_size=args.batch_size)
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return
     
     # Example mentions
     test_mentions = [
@@ -160,7 +281,7 @@ def main():
     ]
     
     print("\n" + "="*50)
-    print("BioMegatron Entity Linking Demo")
+    print("Biomedical Entity Linking Demo")
     print("="*50)
     
     for mention in test_mentions:
@@ -171,14 +292,19 @@ def main():
         for i, (mondo_id, score) in enumerate(predictions, 1):
             print(f"  {i}. {mondo_id} (score: {score:.4f})")
     
-    print("\n" + "="*50)
-    print("Custom mention prediction:")
-    custom_mention = input("Enter a medical mention: ").strip()
-    if custom_mention:
-        predictions = linker.predict(custom_mention, top_k=5)
-        print(f"\nTop 5 predictions for '{custom_mention}':")
-        for i, (mondo_id, score) in enumerate(predictions, 1):
-            print(f"  {i}. {mondo_id} (score: {score:.4f})")
+    if args.interactive:
+        print("\n" + "="*50)
+        print("Interactive mode - Enter medical mentions (Ctrl+C to exit):")
+        try:
+            while True:
+                custom_mention = input("\nEnter a medical mention: ").strip()
+                if custom_mention:
+                    predictions = linker.predict(custom_mention, top_k=5)
+                    print(f"\nTop 5 predictions for '{custom_mention}':")
+                    for i, (mondo_id, score) in enumerate(predictions, 1):
+                        print(f"  {i}. {mondo_id} (score: {score:.4f})")
+        except KeyboardInterrupt:
+            print("\nExiting interactive mode...")
 
 if __name__ == "__main__":
     main() 
