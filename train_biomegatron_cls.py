@@ -2,19 +2,14 @@
 """
 Train biomedical language model fine-tuned as classifier for entity linking.
 
-This script:
-1. Allows users to choose between different biomedical language models
-2. Creates positive and negative training pairs with proper negative sampling
-3. Fine-tunes selected model for ranking MONDO candidates
-4. Saves the BEST model based on validation loss (not final model)
-5. Creates comprehensive training metrics and visualizations
-6. Supports checkpoint resumption for continued training
-7. Organizes models by parameter size and type
+This script supports multiple biomedical language models, creates positive and negative 
+training pairs, fine-tunes the selected model for ranking MONDO candidates, and saves 
+the best model based on validation loss with comprehensive metrics.
 """
 
 import argparse
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments
-from transformers import TrainerCallback
+from transformers import TrainerCallback, set_seed, BitsAndBytesConfig
 import pandas as pd
 import numpy as np
 import torch
@@ -29,7 +24,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import roc_curve, auc, classification_report, confusion_matrix
 
-# Set high-quality matplotlib settings for production plots
+# Production matplotlib settings
 plt.rcParams['figure.dpi'] = 300
 plt.rcParams['savefig.dpi'] = 300
 plt.rcParams['font.size'] = 12
@@ -41,7 +36,7 @@ plt.rcParams['legend.fontsize'] = 10
 plt.rcParams['figure.titlesize'] = 16
 sns.set_style("whitegrid")
 
-# Model configurations for different biomedical language models
+# Model configurations
 BIOMEDICAL_MODELS = {
     "biomegatron-345m": {
         "model_name": "EMBO/BioMegatron345mUncased",
@@ -108,26 +103,25 @@ def verify_model_availability(model_key):
     
     model_info = BIOMEDICAL_MODELS[model_key]
     if not model_info.get("verified", False):
-        print(f"⚠️  Warning: {model_info['display_name']} availability not verified")
+        print(f"Warning: {model_info['display_name']} availability not verified")
         return False
     
     try:
         from transformers import AutoTokenizer
-        # Quick check if model exists
         AutoTokenizer.from_pretrained(model_info["model_name"])
         return True
     except Exception as e:
-        print(f"❌ Error: Could not load {model_info['display_name']}: {e}")
+        print(f"Error: Could not load {model_info['display_name']}: {e}")
         return False
 
 def list_available_models():
     """List all available biomedical models with their details."""
-    print("\n🔬 Available Biomedical Language Models:")
+    print("\nAvailable Biomedical Language Models:")
     print("=" * 80)
     
     for key, info in BIOMEDICAL_MODELS.items():
-        status = "✅ Verified" if info.get("verified", False) else "⚠️  Unverified"
-        print(f"\n📋 Model ID: {key}")
+        status = "Verified" if info.get("verified", False) else "Unverified"
+        print(f"\nModel ID: {key}")
         print(f"   Name: {info['display_name']}")
         print(f"   Parameters: {info['parameters']}")
         print(f"   Status: {status}")
@@ -135,9 +129,6 @@ def list_available_models():
         print(f"   HuggingFace: {info['model_name']}")
     
     print("\n" + "=" * 80)
-    print("💡 Note: BioMegatron 800M and 1.2B variants exist but may not be publicly available on HuggingFace")
-    print("💡 For larger models, consider BioMistral-7B which is readily available and well-performing")
-    print("=" * 80)
 
 def create_model_directory_name(model_info, actual_params=None):
     """Create directory name based on model info."""
@@ -146,7 +137,6 @@ def create_model_directory_name(model_info, actual_params=None):
     else:
         param_str = model_info['parameters']
     
-    # Extract base model name (remove organization prefix)
     base_name = model_info['model_name'].split('/')[-1].lower()
     base_name = re.sub(r'[^a-z0-9]', '_', base_name)
     
@@ -160,7 +150,6 @@ def find_latest_checkpoint(checkpoint_dir):
     if not checkpoints:
         return None, 0
     
-    # Extract step numbers and find the latest
     checkpoint_steps = []
     for checkpoint in checkpoints:
         match = re.search(r'checkpoint-(\d+)', checkpoint)
@@ -170,11 +159,9 @@ def find_latest_checkpoint(checkpoint_dir):
     if not checkpoint_steps:
         return None, 0
     
-    # Sort by step number and get the latest
     checkpoint_steps.sort(key=lambda x: x[0])
     latest_step, latest_checkpoint = checkpoint_steps[-1]
     
-    # Estimate epoch from trainer state if available
     trainer_state_file = os.path.join(latest_checkpoint, "trainer_state.json")
     epoch = 0
     if os.path.exists(trainer_state_file):
@@ -187,288 +174,401 @@ def find_latest_checkpoint(checkpoint_dir):
 def ask_resume_training(checkpoint_path, checkpoint_epoch, target_epochs):
     """Ask user whether to resume training or start from scratch."""
     print(f"\nFound existing checkpoint at: {checkpoint_path}")
-    print(f"Checkpoint epoch: {checkpoint_epoch}")
-    print(f"Target epochs: {target_epochs}")
+    print(f"Checkpoint epoch: {checkpoint_epoch}, Target epochs: {target_epochs}")
     
     if checkpoint_epoch >= target_epochs:
-        print(f"Checkpoint epoch ({checkpoint_epoch}) >= target epochs ({target_epochs})")
         print("Training is already complete or exceeds target epochs.")
         return False
     
-    print(f"Resuming would continue training from epoch {checkpoint_epoch + 1} to {target_epochs}")
-    
-    while True:
-        choice = input("Resume training from checkpoint? (y/n): ").lower().strip()
-        if choice in ['y', 'yes']:
-            return True
-        elif choice in ['n', 'no']:
-            return False
-        else:
-            print("Please enter 'y' for yes or 'n' for no")
+    print(f"Resume training from epoch {checkpoint_epoch + 1} to {target_epochs}? (y/n): ", end="")
+    response = input().strip().lower()
+    return response in ['y', 'yes']
 
 class MetricsCallback(TrainerCallback):
-    """Custom callback to track training metrics for visualization."""
+    """Custom callback to track training metrics with persistence across training sessions."""
     
-    def __init__(self):
+    def __init__(self, metrics_dir=None):
         self.training_loss = []
         self.validation_loss = []
         self.epochs = []
-        self.learning_rates = []
+        self._last_train_loss = None
+        self.metrics_dir = metrics_dir
+        self.metrics_file = None
+        
+        if self.metrics_dir:
+            self.metrics_file = self.metrics_dir / 'loss_history.json'
+            self.load_previous_metrics()
+    
+    def load_previous_metrics(self):
+        """Load metrics from previous training sessions."""
+        if self.metrics_file and self.metrics_file.exists():
+            try:
+                with open(self.metrics_file, 'r') as f:
+                    data = json.load(f)
+                    self.training_loss = data.get('training_loss', [])
+                    self.validation_loss = data.get('validation_loss', [])
+                    self.epochs = data.get('epochs', [])
+                    print(f"Loaded previous metrics: {len(self.epochs)} epochs from {self.metrics_file}")
+            except Exception as e:
+                print(f"Warning: Could not load previous metrics: {e}")
+                self.training_loss = []
+                self.validation_loss = []
+                self.epochs = []
+    
+    def save_metrics(self):
+        """Save current metrics to file."""
+        if self.metrics_file:
+            try:
+                data = {
+                    'training_loss': self.training_loss,
+                    'validation_loss': self.validation_loss,
+                    'epochs': self.epochs
+                }
+                with open(self.metrics_file, 'w') as f:
+                    json.dump(data, f, indent=2)
+            except Exception as e:
+                print(f"Warning: Could not save metrics: {e}")
     
     def on_log(self, args, state, control, logs=None, **kwargs):
-        if logs is not None:
+        if logs:
+            # Track training loss when available
             if 'loss' in logs:
-                self.training_loss.append(logs['loss'])
-                self.learning_rates.append(logs.get('learning_rate', 0))
+                self._last_train_loss = logs['loss']
+            
+            # Capture metrics at evaluation time (once per epoch)
             if 'eval_loss' in logs:
-                self.validation_loss.append(logs['eval_loss'])
-                self.epochs.append(state.epoch)
+                current_epoch = state.epoch
+                
+                # Check if this epoch already exists (resuming training case)
+                if current_epoch in self.epochs:
+                    # Update existing epoch data
+                    epoch_index = self.epochs.index(current_epoch)
+                    self.validation_loss[epoch_index] = logs['eval_loss']
+                    self.training_loss[epoch_index] = self._last_train_loss
+                else:
+                    # Add new epoch data
+                    self.validation_loss.append(logs['eval_loss'])
+                    self.epochs.append(current_epoch)
+                    self.training_loss.append(self._last_train_loss)
+                
+                # Save metrics after each epoch
+                self.save_metrics()
 
 def create_mention_to_representative_text(df):
     """Create mapping from MONDO ID to representative mention text."""
-    mondo_to_mentions = df.groupby('mondo_id')['mention'].apply(list).to_dict()
+    mention_mapping = {}
+    for _, row in df.iterrows():
+        mondo_id = row['mondo_id']
+        mention = row['mention']
+        
+        if mondo_id not in mention_mapping:
+            mention_mapping[mondo_id] = mention
+        elif len(mention) < len(mention_mapping[mondo_id]):
+            mention_mapping[mondo_id] = mention
     
-    mondo_to_text = {}
-    for mondo_id, mentions in mondo_to_mentions.items():
-        # Use most frequent mention as representative
-        mention_counts = pd.Series(mentions).value_counts()
-        representative_mention = mention_counts.index[0]
-        mondo_to_text[mondo_id] = representative_mention
-    
-    return mondo_to_text
+    return mention_mapping
 
 def pair_df(df):
-    """
-    Generate mention x MONDO text pairs for training with proper negative sampling.
-    """
-    print(f"Processing {len(df)} mention-MONDO pairs...")
+    """Create positive and negative training pairs from the dataset."""
+    mention_mapping = create_mention_to_representative_text(df)
     
-    # Create MONDO ID to representative text mapping
-    mondo_to_text = create_mention_to_representative_text(df)
-    
-    # Create mention -> valid MONDO IDs mapping for proper negative sampling
-    mention_to_mondos = defaultdict(set)
-    for _, row in df.iterrows():
-        mention_to_mondos[row['mention']].add(row['mondo_id'])
-    
-    all_mondo_ids = set(df['mondo_id'].unique())
-    
-    # Positive pairs: actual mention-MONDO matches using representative text
     positive_pairs = []
     for _, row in df.iterrows():
         mention = row['mention']
         mondo_id = row['mondo_id']
-        representative_text = mondo_to_text[mondo_id]
+        representative_text = mention_mapping.get(mondo_id, mondo_id)
         
         positive_pairs.append({
-            'mention': mention,
-            'mondo_id': mondo_id,
             'input': f"{mention} [SEP] {representative_text}",
             'label': 1.0
         })
     
-    # Negative pairs: ensure they are actually incorrect
+    # Create negative pairs
     negative_pairs = []
+    all_mondo_ids = list(mention_mapping.keys())
+    
     for _, row in df.iterrows():
         mention = row['mention']
-        valid_mondos = mention_to_mondos[mention]
-        invalid_mondos = all_mondo_ids - valid_mondos
+        correct_mondo_id = row['mondo_id']
         
-        if len(invalid_mondos) > 0:
-            # Sample a random invalid MONDO ID
-            negative_mondo = np.random.choice(list(invalid_mondos))
-            representative_text = mondo_to_text[negative_mondo]
-            
+        # Sample random incorrect MONDO IDs
+        incorrect_mondo_ids = [mid for mid in all_mondo_ids if mid != correct_mondo_id]
+        sampled_incorrect = np.random.choice(incorrect_mondo_ids, size=min(3, len(incorrect_mondo_ids)), replace=False)
+        
+        for incorrect_mondo_id in sampled_incorrect:
+            representative_text = mention_mapping[incorrect_mondo_id]
             negative_pairs.append({
-                'mention': mention,
-                'mondo_id': negative_mondo,
                 'input': f"{mention} [SEP] {representative_text}",
                 'label': 0.0
             })
     
-    # Combine positive and negative pairs
-    all_pairs = positive_pairs + negative_pairs
-    paired_df = pd.DataFrame(all_pairs)
-    
-    print(f"Created {len(paired_df)} total pairs ({len(positive_pairs)} positive, {len(negative_pairs)} negative)")
-    print("Using proper negative sampling with representative mention text")
-    
-    # Show examples
-    print("\nSample positive pairs:")
-    for i in range(min(3, len(positive_pairs))):
-        print(f"  '{positive_pairs[i]['input']}' → {positive_pairs[i]['label']}")
-    
-    print("\nSample negative pairs:")
-    for i in range(min(3, len(negative_pairs))):
-        print(f"  '{negative_pairs[i]['input']}' → {negative_pairs[i]['label']}")
-    
+    paired_df = pd.DataFrame(positive_pairs + negative_pairs)
     return paired_df
 
 def tokenize(batch):
-    """Tokenize input pairs for the model."""
+    """Tokenize input text for training."""
     return tok(
-        batch["input"], 
-        truncation=True, 
-        padding="max_length",
-        max_length=64  # Keep sequences short for efficiency
+        batch["input"],
+        truncation=True,
+        padding=True,
+        max_length=64
     )
 
 def create_training_plots(metrics_callback, metrics_dir):
-    """Create high-quality training and validation loss plots."""
+    """Create comprehensive training visualization plots with full epoch history."""
+    if not metrics_callback.validation_loss:
+        print("No validation loss data available for plotting")
+        return
     
-    # Training & Validation Loss Plot
+    # Filter out None values and ensure we have matching data
+    valid_indices = []
+    valid_epochs = []
+    valid_train_loss = []
+    valid_val_loss = []
+    
+    for i, (epoch, train_loss, val_loss) in enumerate(zip(
+        metrics_callback.epochs, 
+        metrics_callback.training_loss, 
+        metrics_callback.validation_loss
+    )):
+        if train_loss is not None and val_loss is not None:
+            valid_indices.append(i)
+            valid_epochs.append(epoch)
+            valid_train_loss.append(train_loss)
+            valid_val_loss.append(val_loss)
+    
+    if not valid_epochs:
+        print("No valid training/validation loss pairs found for plotting")
+        return
+    
+    # Sort by epoch to ensure proper chronological order
+    sorted_data = sorted(zip(valid_epochs, valid_train_loss, valid_val_loss))
+    valid_epochs, valid_train_loss, valid_val_loss = zip(*sorted_data)
+    
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
     
-    # Plot 1: Training Loss over Steps
-    steps = range(len(metrics_callback.training_loss))
-    ax1.plot(steps, metrics_callback.training_loss, 'b-', linewidth=2, label='Training Loss', alpha=0.8)
-    ax1.set_xlabel('Training Steps')
+    # Training and validation loss over all epochs
+    ax1.plot(valid_epochs, valid_train_loss, 'b-', label='Training Loss', linewidth=2, marker='o', markersize=3)
+    ax1.plot(valid_epochs, valid_val_loss, 'r-', label='Validation Loss', linewidth=2, marker='s', markersize=3)
+    ax1.set_xlabel('Epoch')
     ax1.set_ylabel('Loss')
-    ax1.set_title('Training Loss Over Time', fontweight='bold')
-    ax1.grid(True, alpha=0.3)
+    ax1.set_title(f'Training Progress (Epochs 1-{max(valid_epochs):.0f})')
     ax1.legend()
+    ax1.grid(True, alpha=0.3)
     
-    # Plot 2: Validation Loss over Epochs
-    if metrics_callback.epochs and metrics_callback.validation_loss:
-        ax2.plot(metrics_callback.epochs, metrics_callback.validation_loss, 'r-o', 
-                linewidth=2, markersize=8, label='Validation Loss', alpha=0.8)
+    # Add epoch range information
+    total_epochs = len(valid_epochs)
+    min_epoch = min(valid_epochs)
+    max_epoch = max(valid_epochs)
+    ax1.text(0.02, 0.98, f'Total Epochs: {total_epochs}\nEpoch Range: {min_epoch:.0f}-{max_epoch:.0f}', 
+             transform=ax1.transAxes, verticalalignment='top', 
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    
+    # Loss difference (overfitting monitor)
+    if len(valid_train_loss) > 0:
+        loss_diff = np.array(valid_val_loss) - np.array(valid_train_loss)
+        ax2.plot(valid_epochs, loss_diff, 'g-', linewidth=2, marker='d', markersize=3)
         ax2.set_xlabel('Epoch')
-        ax2.set_ylabel('Validation Loss')
-        ax2.set_title('Validation Loss Over Epochs', fontweight='bold')
+        ax2.set_ylabel('Validation Loss - Training Loss')
+        ax2.set_title('Overfitting Monitor')
         ax2.grid(True, alpha=0.3)
+        ax2.axhline(y=0, color='k', linestyle='--', alpha=0.5, label='Perfect Fit')
         ax2.legend()
         
-        # Mark best epoch
-        best_epoch_idx = np.argmin(metrics_callback.validation_loss)
-        best_epoch = metrics_callback.epochs[best_epoch_idx]
-        best_loss = metrics_callback.validation_loss[best_epoch_idx]
-        ax2.annotate(f'Best: Epoch {best_epoch:.1f}\nLoss: {best_loss:.4f}', 
-                    xy=(best_epoch, best_loss), xytext=(10, 10),
-                    textcoords='offset points', fontsize=10,
-                    bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7),
-                    arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0'))
+        # Add statistics
+        mean_diff = np.mean(loss_diff)
+        std_diff = np.std(loss_diff)
+        ax2.text(0.02, 0.98, f'Mean Diff: {mean_diff:.4f}\nStd Diff: {std_diff:.4f}', 
+                 transform=ax2.transAxes, verticalalignment='top',
+                 bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
     
     plt.tight_layout()
-    plt.savefig(metrics_dir / 'training_validation_loss.png', dpi=300, bbox_inches='tight')
-    plt.savefig(metrics_dir / 'training_validation_loss.pdf', bbox_inches='tight')
+    plt.savefig(metrics_dir / 'training_metrics.png', dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"Saved: {metrics_dir}/training_validation_loss.png")
-    print(f"Saved: {metrics_dir}/training_validation_loss.pdf")
+    print(f"Training plots saved to {metrics_dir / 'training_metrics.png'}")
+    print(f"Plotted {len(valid_epochs)} epochs of training history (epochs {min(valid_epochs):.0f}-{max(valid_epochs):.0f})")
 
 def create_roc_analysis(dev, final_model_path, metrics_dir):
-    """Create ROC curve analysis on validation data."""
+    """Create ROC curve analysis of the final model."""
+    try:
+        model = AutoModelForSequenceClassification.from_pretrained(final_model_path)
+        tokenizer = AutoTokenizer.from_pretrained(final_model_path)
+        
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        
+        device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+        model.to(device)
+        model.eval()
+        
+        predictions = []
+        true_labels = []
+        
+        with torch.no_grad():
+            for _, row in dev.iterrows():
+                inputs = tokenizer(row['input'], return_tensors='pt', truncation=True, padding=True, max_length=64)
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+                
+                outputs = model(**inputs)
+                pred = torch.sigmoid(outputs.logits).cpu().numpy()[0][0]
+                
+                predictions.append(pred)
+                true_labels.append(row['label'])
+        
+        # ROC Curve
+        fpr, tpr, _ = roc_curve(true_labels, predictions)
+        roc_auc = auc(fpr, tpr)
+        
+        plt.figure(figsize=(8, 6))
+        plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.4f})')
+        plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Random')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('ROC Curve - Model Performance')
+        plt.legend(loc="lower right")
+        plt.grid(True, alpha=0.3)
+        plt.savefig(metrics_dir / 'roc_curve.png', dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # Classification report
+        binary_predictions = [1 if p > 0.5 else 0 for p in predictions]
+        class_report = classification_report(true_labels, binary_predictions, output_dict=True)
+        
+        return roc_auc, class_report
+        
+    except Exception as e:
+        print(f"Error in ROC analysis: {e}")
+        return 0.0, {}
+
+def save_globally_best_model(trainer, metrics_callback, checkpoint_dir, final_model_dir):
+    """
+    Find the globally best model across all training epochs (including previous sessions)
+    and save it as the final model.
+    """
+    if not metrics_callback.validation_loss:
+        print("No validation loss data available, saving current model")
+        trainer.save_model(str(final_model_dir))
+        return
     
-    print("Generating ROC curve analysis...")
+    # Find the epoch with the globally best (lowest) validation loss
+    best_val_loss = min(metrics_callback.validation_loss)
+    best_epoch_idx = np.argmin(metrics_callback.validation_loss)
+    best_epoch = metrics_callback.epochs[best_epoch_idx]
     
-    # Load the best model for evaluation
-    best_model = AutoModelForSequenceClassification.from_pretrained(str(final_model_path))
-    best_tokenizer = AutoTokenizer.from_pretrained(str(final_model_path))
+    print(f"\nFinding globally best model across all {len(metrics_callback.epochs)} epochs...")
+    print(f"Best validation loss: {best_val_loss:.4f} at epoch {best_epoch:.0f}")
     
-    # Move to appropriate device
-    device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-    best_model.to(device)
-    best_model.eval()
+    # Check if the best epoch corresponds to a saved checkpoint
+    checkpoint_pattern = os.path.join(checkpoint_dir, f"checkpoint-*")
+    all_checkpoints = glob.glob(checkpoint_pattern)
     
-    # Get predictions on validation set
-    val_inputs = []
-    val_labels = []
+    # Map checkpoint steps to epochs using trainer state files
+    checkpoint_epochs = {}
+    for checkpoint_path in all_checkpoints:
+        trainer_state_file = os.path.join(checkpoint_path, "trainer_state.json")
+        if os.path.exists(trainer_state_file):
+            try:
+                with open(trainer_state_file, 'r') as f:
+                    state = json.load(f)
+                    epoch = int(state.get('epoch', 0))
+                    checkpoint_epochs[epoch] = checkpoint_path
+            except:
+                continue
     
-    for example in dev.itertuples():
-        val_inputs.append(example.input)
-        val_labels.append(example.label)
+    # Try to find the checkpoint for the best epoch
+    best_checkpoint_path = None
     
-    # Tokenize validation inputs
-    val_encodings = best_tokenizer(
-        val_inputs,
-        truncation=True,
-        padding=True,
-        max_length=64,
-        return_tensors="pt"
-    )
+    # First, try exact match
+    if best_epoch in checkpoint_epochs:
+        best_checkpoint_path = checkpoint_epochs[best_epoch]
+        print(f"Found exact checkpoint for best epoch {best_epoch:.0f}: {best_checkpoint_path}")
+    else:
+        # If exact match not found, find the closest saved checkpoint
+        available_epochs = sorted(checkpoint_epochs.keys())
+        if available_epochs:
+            closest_epoch = min(available_epochs, key=lambda x: abs(x - best_epoch))
+            best_checkpoint_path = checkpoint_epochs[closest_epoch]
+            print(f"Best epoch {best_epoch:.0f} checkpoint not found, using closest: epoch {closest_epoch} ({best_checkpoint_path})")
     
-    # Move to device
-    val_encodings = {k: v.to(device) for k, v in val_encodings.items()}
-    
-    # Get predictions
-    with torch.no_grad():
-        outputs = best_model(**val_encodings)
-        predictions = torch.sigmoid(outputs.logits).squeeze().cpu().numpy()
-    
-    # Convert labels to numpy
-    val_labels = np.array(val_labels)
-    
-    # Calculate ROC curve
-    fpr, tpr, thresholds = roc_curve(val_labels, predictions)
-    roc_auc = auc(fpr, tpr)
-    
-    # Create ROC plot
-    plt.figure(figsize=(10, 8))
-    plt.plot(fpr, tpr, color='darkorange', lw=3, 
-             label=f'ROC Curve (AUC = {roc_auc:.4f})', alpha=0.8)
-    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', alpha=0.8)
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.05])
-    plt.xlabel('False Positive Rate', fontweight='bold')
-    plt.ylabel('True Positive Rate', fontweight='bold')
-    plt.title('ROC Curve - Biomedical Entity Linking Classifier', fontweight='bold', fontsize=16)
-    plt.legend(loc="lower right", fontsize=12)
-    plt.grid(True, alpha=0.3)
-    
-    # Add AUC text box
-    plt.text(0.6, 0.2, f'AUC Score: {roc_auc:.4f}', fontsize=14,
-             bbox=dict(boxstyle='round,pad=0.5', facecolor='lightblue', alpha=0.8))
-    
-    plt.tight_layout()
-    plt.savefig(metrics_dir / 'roc_curve.png', dpi=300, bbox_inches='tight')
-    plt.savefig(metrics_dir / 'roc_curve.pdf', bbox_inches='tight')
-    plt.close()
-    
-    print(f"Saved: {metrics_dir}/roc_curve.png")
-    print(f"Saved: {metrics_dir}/roc_curve.pdf")
-    
-    # Classification report
-    binary_predictions = (predictions > 0.5).astype(int)
-    class_report = classification_report(val_labels, binary_predictions, 
-                                       target_names=['Negative', 'Positive'], 
-                                       output_dict=True)
-    
-    return roc_auc, class_report
+    # Load and save the best model
+    if best_checkpoint_path and os.path.exists(best_checkpoint_path):
+        try:
+            print(f"Loading best model from: {best_checkpoint_path}")
+            # Load the model from the best checkpoint
+            best_model = AutoModelForSequenceClassification.from_pretrained(best_checkpoint_path)
+            best_tokenizer = AutoTokenizer.from_pretrained(best_checkpoint_path)
+            
+            # Save to final model directory
+            best_model.save_pretrained(str(final_model_dir))
+            best_tokenizer.save_pretrained(str(final_model_dir))
+            
+            print(f"Globally best model saved to: {final_model_dir}")
+            print(f"Model corresponds to epoch {best_epoch:.0f} with validation loss {best_val_loss:.4f}")
+            
+        except Exception as e:
+            print(f"Error loading best checkpoint: {e}")
+            print("Falling back to saving current model")
+            trainer.save_model(str(final_model_dir))
+    else:
+        print("Best checkpoint not found, saving current model")
+        trainer.save_model(str(final_model_dir))
 
 def train_biomedical_classifier(args, model_info):
     """Main training function for biomedical classifier."""
     
-    # Load and prepare training data
-    print("\nLoading training and development datasets...")
     train = pair_df(pd.read_csv('data/mondo_train.csv'))
     dev = pair_df(pd.read_csv('data/mondo_dev.csv'))
     
-    print("\nLoading model and tokenizer...")
     try:
         global tok
         tok = AutoTokenizer.from_pretrained(model_info['model_name'])
-        model = AutoModelForSequenceClassification.from_pretrained(
-            model_info['model_name'], 
-            num_labels=1  # regression score for ranking
-        )
         
-        # Get actual parameter count
+        if tok.pad_token is None:
+            tok.pad_token = tok.eos_token
+        
+        # Try 8-bit quantization first, fallback to regular loading if not supported
+        try:
+            # Configure 8-bit quantization to reduce memory usage
+            bnb_config = BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_threshold=6.0
+            )
+            
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_info['model_name'],
+                num_labels=1,
+                quantization_config=bnb_config,
+                device_map="auto",
+                torch_dtype=torch.float16,
+                low_cpu_mem_usage=True
+            )
+            print("Model loaded with 8-bit quantization")
+        except Exception as quant_error:
+            print(f"8-bit quantization failed: {quant_error}")
+            print("Falling back to regular model loading...")
+            # Fallback to regular loading without quantization (Mac-compatible)
+            model = AutoModelForSequenceClassification.from_pretrained(
+                model_info['model_name'],
+                num_labels=1,
+                low_cpu_mem_usage=True
+            )
+        
         actual_param_count = get_model_parameters_count(model)
         actual_param_str = format_parameter_count(actual_param_count)
         
-        print(f"Model loaded successfully!")
-        print(f"Actual parameters: {actual_param_str} ({actual_param_count:,} parameters)")
+        print(f"Model loaded: {model_info['display_name']} ({actual_param_str})")
         
     except Exception as e:
         print(f"Error loading model: {e}")
-        print("Please check if the model is available and accessible.")
         return
     
-    # Create directories with model-specific naming
+    # Create directories
     models_dir = pathlib.Path('models')
     models_dir.mkdir(exist_ok=True)
     
-    # Create model-specific directory
     model_dir_name = create_model_directory_name(model_info, actual_param_count)
     model_base_dir = models_dir / model_dir_name
     model_base_dir.mkdir(exist_ok=True)
@@ -478,11 +578,6 @@ def train_biomedical_classifier(args, model_info):
     metrics_dir = model_base_dir / "metrics"
     metrics_dir.mkdir(exist_ok=True)
     
-    print(f"Model directory: {model_base_dir}")
-    print(f"Checkpoints: {checkpoint_dir}")
-    print(f"Final model: {final_model_dir}")
-    print(f"Metrics: {metrics_dir}")
-    
     # Check for existing checkpoints
     latest_checkpoint, checkpoint_epoch = find_latest_checkpoint(str(checkpoint_dir))
     resume_from_checkpoint = None
@@ -490,22 +585,19 @@ def train_biomedical_classifier(args, model_info):
     if latest_checkpoint and checkpoint_epoch < args.epochs:
         if ask_resume_training(latest_checkpoint, checkpoint_epoch, args.epochs):
             resume_from_checkpoint = latest_checkpoint
-            print(f"Will resume training from {latest_checkpoint}")
         else:
             print("Starting training from scratch")
     elif latest_checkpoint and checkpoint_epoch >= args.epochs:
         print(f"Training already completed ({checkpoint_epoch} epochs >= {args.epochs} target epochs)")
-        print("If you want to train more epochs, increase the --epochs parameter")
         return
     
-    print("\nTokenizing datasets...")
+    # Tokenize datasets
     ds_train = Dataset.from_pandas(train).map(tokenize, batched=True)
     ds_dev = Dataset.from_pandas(dev).map(tokenize, batched=True)
     
-    # Initialize metrics callback
-    metrics_callback = MetricsCallback()
+    metrics_callback = MetricsCallback(metrics_dir)
     
-    # Training arguments with BEST MODEL SAVING based on eval_loss
+    # Training arguments
     args_training = TrainingArguments(
         output_dir=str(checkpoint_dir),
         per_device_train_batch_size=args.batch_size,
@@ -516,43 +608,33 @@ def train_biomedical_classifier(args, model_info):
         save_strategy="epoch",
         logging_strategy="steps",
         logging_steps=50,
-        save_total_limit=3,   # Keep only 3 best checkpoints to save space
-        load_best_model_at_end=True,        # Load best model at end
-        metric_for_best_model="eval_loss",   # Use eval_loss as metric
-        greater_is_better=False,             # Lower eval_loss is better
+        save_total_limit=10,  # Increased to preserve more checkpoints for global best model selection
+        load_best_model_at_end=False,  # Disabled: we implement global best model selection
         report_to=None,
         warmup_steps=args.warmup_steps,
         weight_decay=0.01,
-        dataloader_pin_memory=False,  # Disable pin_memory for MPS compatibility
+        dataloader_pin_memory=False,
     )
     
-    print("Initializing trainer...")
     trainer = Trainer(
         model=model,
         args=args_training,
         train_dataset=ds_train.remove_columns(['input']),
         eval_dataset=ds_dev.remove_columns(['input']),
-        tokenizer=tok,
-        callbacks=[metrics_callback]  # Add metrics tracking
+        processing_class=tok,
+        callbacks=[metrics_callback]
     )
     
     if resume_from_checkpoint:
-        print(f"Starting training from checkpoint: {resume_from_checkpoint}")
-        print(f"Resuming from epoch {checkpoint_epoch + 1} to {args.epochs}")
+        print(f"Resuming from checkpoint: {resume_from_checkpoint}")
     else:
-        print("Starting training from scratch...")
-        print(f"Training examples: {len(ds_train)}")
-        print(f"Evaluation examples: {len(ds_dev)}")
-        print(f"Training for {args_training.num_train_epochs} epochs")
-    
-    print("Best model will be saved based on lowest validation loss")
+        print(f"Training {len(ds_train)} examples for {args_training.num_train_epochs} epochs")
     
     # Train the model
     trainer.train(resume_from_checkpoint=resume_from_checkpoint)
     
-    # Save the final model (which is actually the BEST model due to load_best_model_at_end=True)
-    print(f"Saving BEST model (lowest eval_loss) to {final_model_dir}")
-    trainer.save_model(str(final_model_dir))
+    # Find and save the globally best model across all epochs (including previous sessions)
+    save_globally_best_model(trainer, metrics_callback, checkpoint_dir, final_model_dir)
     
     # Save model metadata
     model_metadata = {
@@ -575,11 +657,7 @@ def train_biomedical_classifier(args, model_info):
     with open(model_base_dir / 'model_info.json', 'w') as f:
         json.dump(model_metadata, f, indent=2)
     
-    # Generate comprehensive metrics and visualizations
-    print("\n" + "="*60)
-    print("GENERATING PRODUCTION-QUALITY METRICS & VISUALIZATIONS")
-    print("="*60)
-    
+    # Generate metrics and visualizations
     create_training_plots(metrics_callback, metrics_dir)
     roc_auc, class_report = create_roc_analysis(dev, final_model_dir, metrics_dir)
     
@@ -589,34 +667,40 @@ def train_biomedical_classifier(args, model_info):
         'roc_auc': float(roc_auc),
         'best_epoch': float(metrics_callback.epochs[np.argmin(metrics_callback.validation_loss)]) if metrics_callback.validation_loss else None,
         'best_validation_loss': float(min(metrics_callback.validation_loss)) if metrics_callback.validation_loss else None,
-        'final_training_loss': float(metrics_callback.training_loss[-1]) if metrics_callback.training_loss else None,
+        'final_training_loss': float(metrics_callback.training_loss[-1]) if metrics_callback.training_loss and metrics_callback.training_loss[-1] is not None else None,
         'classification_report': class_report,
         'total_training_samples': len(ds_train),
         'total_validation_samples': len(ds_dev),
+        'total_epochs_trained': len(metrics_callback.epochs),
+        'epoch_range': f"{min(metrics_callback.epochs):.0f}-{max(metrics_callback.epochs):.0f}" if metrics_callback.epochs else None,
+        'training_sessions': 'resumed' if resume_from_checkpoint else 'fresh_start',
+        'best_model_selection': 'global_across_all_epochs',
+        'globally_best_epoch': float(metrics_callback.epochs[np.argmin(metrics_callback.validation_loss)]) if metrics_callback.validation_loss else None
     }
     
     with open(metrics_dir / 'metrics_summary.json', 'w') as f:
         json.dump(metrics_summary, f, indent=2)
     
-    print(f"Saved: {metrics_dir}/metrics_summary.json")
-    
-    print("\n" + "="*60)
-    print("TRAINING COMPLETED SUCCESSFULLY!")
-    print("="*60)
-    print(f"Model saved to: {final_model_dir}")
-    print(f"Model info: {model_base_dir}/model_info.json")
-    print(f"Metrics: {metrics_dir}/")
+    print("\nTraining completed successfully!")
+    print(f"Final model saved to: {final_model_dir}")
     print(f"ROC AUC: {roc_auc:.4f}")
     
     if metrics_callback.validation_loss:
         best_val_loss = min(metrics_callback.validation_loss)
-        print(f"Best validation loss: {best_val_loss:.4f}")
-    
-    print("="*60)
+        best_epoch = metrics_callback.epochs[np.argmin(metrics_callback.validation_loss)]
+        total_epochs = len(metrics_callback.epochs)
+        epoch_range = f"{min(metrics_callback.epochs):.0f}-{max(metrics_callback.epochs):.0f}"
+        
+        print(f"\nGlobal Training Summary:")
+        print(f"  Best validation loss: {best_val_loss:.4f} (epoch {best_epoch:.0f})")
+        print(f"  Total epochs trained: {total_epochs} (range: {epoch_range})")
+        print(f"  Final model uses globally best checkpoint across all epochs")
+        if resume_from_checkpoint:
+            print(f"  Training resumed from checkpoint and combined with previous history")
 
 def main():
     parser = argparse.ArgumentParser(description='Train biomedical language model for entity linking')
-    parser.add_argument('--model', type=str, required=True, 
+    parser.add_argument('--model', type=str, required=False, 
                         help='Model to use (e.g., biomegatron-345m, clinical-bert, pubmed-bert, biobert, biomistral-7b)')
     parser.add_argument('--epochs', type=int, default=30, 
                         help='Number of training epochs (default: 30)')
@@ -641,24 +725,23 @@ def main():
         list_available_models()
         return
     
-    # Verify model availability
-    if not verify_model_availability(args.model):
-        print(f"\n❌ Model '{args.model}' is not available or verified.")
-        print("Use --list_models to see available models.")
+    if not args.model:
+        print("Error: --model argument is required when not using --list_models")
+        parser.print_help()
         return
     
-    # Set random seeds for reproducibility
-    set_seed(args.seed)
+    # Verify model availability
+    if not verify_model_availability(args.model):
+        print(f"Model '{args.model}' is not available or verified.")
+        return
     
-    # Get model configuration
     model_info = BIOMEDICAL_MODELS[args.model]
     
-    print(f"\n🚀 Starting training with {model_info['display_name']}")
-    print(f"📊 Parameters: {model_info['parameters']}")
-    print(f"🤗 HuggingFace: {model_info['model_name']}")
-    print(f"📝 Description: {model_info['description']}")
+    # Set seed for reproducibility
+    set_seed(args.seed)
     
-    # Train the model
+    print(f"Starting training with {model_info['display_name']}")
+    
     train_biomedical_classifier(args, model_info)
 
 if __name__ == "__main__":
