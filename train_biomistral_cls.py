@@ -4,10 +4,38 @@ Train BioMistral-7B language model fine-tuned as classifier for entity linking.
 
 This script is optimized for large language models (7B parameters) with:
 - Model parallelism across multiple GPUs using Accelerate/DeepSpeed
-- 8-bit quantization with bitsandbytes
+- 8-bit and 4-bit quantization with bitsandbytes
 - FP16/BF16 mixed precision training
 - Memory-efficient training strategies
 - Gradient checkpointing for reduced memory usage
+
+USAGE:
+======
+
+1. Configure Accelerate (first time only):
+   accelerate config
+
+2. Basic multi-GPU training:
+   accelerate launch --multi_gpu train_biomistral_cls.py --use_8bit --fp16
+
+3. With DeepSpeed ZeRO-2:
+   accelerate launch --multi_gpu train_biomistral_cls.py \
+     --use_deepspeed --deepspeed_stage 2 --use_8bit --fp16
+
+4. Maximum memory efficiency (ZeRO-3 + 4-bit):
+   accelerate launch --multi_gpu train_biomistral_cls.py \
+     --use_4bit --gradient_checkpointing --use_deepspeed --deepspeed_stage 3
+
+5. Single GPU with quantization:
+   python train_biomistral_cls.py --use_8bit --gradient_checkpointing --fp16
+
+REQUIREMENTS:
+=============
+- accelerate
+- deepspeed
+- bitsandbytes
+- transformers>=4.30.0
+- torch>=2.0.0
 """
 
 import argparse
@@ -72,60 +100,122 @@ def format_parameter_count(param_count):
     else:
         return str(param_count)
 
-def setup_accelerator(args):
+def create_deepspeed_config(args, output_dir):
+    """Create DeepSpeed configuration file and return the plugin."""
+    if not args.use_deepspeed:
+        return None
+    
+    # Create DeepSpeed configuration
+    deepspeed_config = {
+        "zero_optimization": {
+            "stage": args.deepspeed_stage,
+            "offload_optimizer": {
+                "device": "cpu" if args.deepspeed_stage >= 2 else "none",
+                "pin_memory": True
+            },
+            "offload_param": {
+                "device": "cpu" if args.deepspeed_stage >= 3 else "none",
+                "pin_memory": True
+            },
+            "overlap_comm": True,
+            "contiguous_gradients": True,
+            "sub_group_size": 1e9,
+            "reduce_bucket_size": "auto",
+            "stage3_prefetch_bucket_size": "auto",
+            "stage3_param_persistence_threshold": "auto",
+            "stage3_max_live_parameters": 1e9,
+            "stage3_max_reuse_distance": 1e9,
+            "gather_16bit_weights_on_model_save": args.deepspeed_stage == 3
+        },
+        "fp16": {
+            "enabled": args.fp16,
+            "auto_cast": False,
+            "loss_scale": 0,
+            "initial_scale_power": 16,
+            "loss_scale_window": 1000,
+            "hysteresis": 2,
+            "min_loss_scale": 1
+        },
+        "bf16": {
+            "enabled": args.bf16
+        },
+        "optimizer": {
+            "type": "AdamW",
+            "params": {
+                "lr": "auto",
+                "betas": "auto",
+                "eps": "auto",
+                "weight_decay": "auto"
+            }
+        },
+        "scheduler": {
+            "type": "WarmupLR",
+            "params": {
+                "warmup_min_lr": "auto",
+                "warmup_max_lr": "auto",
+                "warmup_num_steps": "auto"
+            }
+        },
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "gradient_clipping": 1.0,
+        "steps_per_print": 10,
+        "train_batch_size": "auto",
+        "train_micro_batch_size_per_gpu": "auto",
+        "wall_clock_breakdown": False
+    }
+    
+    # Save config to file
+    config_path = output_dir / "deepspeed_config.json"
+    with open(config_path, 'w') as f:
+        json.dump(deepspeed_config, f, indent=2)
+    
+    print(f"DeepSpeed config saved to: {config_path}")
+    
+    # Create DeepSpeed plugin
+    deepspeed_plugin = DeepSpeedPlugin(
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        gradient_clipping=1.0,
+        zero_stage=args.deepspeed_stage,
+        offload_optimizer_device="cpu" if args.deepspeed_stage >= 2 else "none",
+        offload_param_device="cpu" if args.deepspeed_stage >= 3 else "none",
+        zero3_init_flag=args.deepspeed_stage == 3,
+        zero3_save_16bit_model=args.deepspeed_stage == 3
+    )
+    
+    print(f"Using DeepSpeed ZeRO Stage {args.deepspeed_stage}")
+    return deepspeed_plugin
+
+def setup_accelerator(args, output_dir):
     """Setup Accelerator with appropriate configuration for large model training."""
     
-    # Configure DeepSpeed if requested
-    deepspeed_plugin = None
-    if args.use_deepspeed:
-        deepspeed_config = {
-            "zero_optimization": {
-                "stage": args.deepspeed_stage,
-                "offload_optimizer": {
-                    "device": "cpu" if args.deepspeed_stage >= 2 else "none"
-                },
-                "offload_param": {
-                    "device": "cpu" if args.deepspeed_stage >= 3 else "none"
-                }
-            },
-            "fp16": {
-                "enabled": args.fp16
-            },
-            "bf16": {
-                "enabled": args.bf16
-            },
-            "gradient_accumulation_steps": args.gradient_accumulation_steps,
-            "train_micro_batch_size_per_gpu": args.batch_size
-        }
-        
-        deepspeed_plugin = DeepSpeedPlugin(
-            gradient_accumulation_steps=args.gradient_accumulation_steps,
-            gradient_clipping=1.0,
-            zero_stage=args.deepspeed_stage,
-            offload_optimizer_device="cpu" if args.deepspeed_stage >= 2 else "none",
-            offload_param_device="cpu" if args.deepspeed_stage >= 3 else "none"
-        )
-        print(f"Using DeepSpeed ZeRO Stage {args.deepspeed_stage}")
+    # Create DeepSpeed plugin if requested
+    deepspeed_plugin = create_deepspeed_config(args, output_dir)
     
-    # Configure DDP settings
+    # Configure DDP settings for non-DeepSpeed training
     ddp_kwargs = DistributedDataParallelKwargs(
         find_unused_parameters=False,
         broadcast_buffers=False
-    )
+    ) if not args.use_deepspeed else None
     
     # Initialize accelerator
     accelerator = Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         mixed_precision="fp16" if args.fp16 else "bf16" if args.bf16 else "no",
         deepspeed_plugin=deepspeed_plugin,
-        kwargs_handlers=[ddp_kwargs] if not args.use_deepspeed else None
+        kwargs_handlers=[ddp_kwargs] if ddp_kwargs else None,
+        project_dir=str(output_dir)
     )
     
-    print(f"Accelerator initialized:")
-    print(f"  Device: {accelerator.device}")
-    print(f"  Num processes: {accelerator.num_processes}")
-    print(f"  Mixed precision: {accelerator.mixed_precision}")
-    print(f"  Gradient accumulation steps: {args.gradient_accumulation_steps}")
+    # Print accelerator info
+    if accelerator.is_main_process:
+        print(f"Accelerator initialized:")
+        print(f"  Device: {accelerator.device}")
+        print(f"  Num processes: {accelerator.num_processes}")
+        print(f"  Mixed precision: {accelerator.mixed_precision}")
+        print(f"  Gradient accumulation steps: {args.gradient_accumulation_steps}")
+        print(f"  Is main process: {accelerator.is_main_process}")
+        if args.use_deepspeed:
+            print(f"  DeepSpeed ZeRO Stage: {args.deepspeed_stage}")
     
     return accelerator
 
@@ -150,15 +240,43 @@ def create_quantization_config(args):
     
     return None
 
-def load_biomistral_model(args):
+def validate_args(args):
+    """Validate argument combinations and system compatibility."""
+    # Check for conflicting quantization flags
+    if args.use_4bit and args.use_8bit:
+        raise ValueError("Cannot use both 4-bit and 8-bit quantization simultaneously. Choose one.")
+    
+    # Check for conflicting precision flags
+    if args.fp16 and args.bf16:
+        raise ValueError("Cannot use both FP16 and BF16 simultaneously. Choose one.")
+    
+    # Check BF16 support
+    if args.bf16 and not torch.cuda.is_bf16_supported():
+        print("Warning: BF16 not supported on this device, falling back to FP16")
+        args.bf16 = False
+        args.fp16 = True
+    
+    # Validate DeepSpeed stage
+    if args.use_deepspeed and args.deepspeed_stage not in [1, 2, 3]:
+        raise ValueError("DeepSpeed stage must be 1, 2, or 3")
+    
+    # Warn about quantization with DeepSpeed ZeRO-3
+    if args.use_deepspeed and args.deepspeed_stage == 3 and (args.use_4bit or args.use_8bit):
+        print("Warning: Quantization with DeepSpeed ZeRO-3 may cause issues. Consider using ZeRO-2 instead.")
+    
+    return args
+
+def load_biomistral_model(args, accelerator):
     """Load BioMistral model with memory optimizations."""
-    print(f"Loading BioMistral-7B model...")
-    print(f"Memory optimizations:")
-    print(f"  8-bit quantization: {args.use_8bit}")
-    print(f"  4-bit quantization: {args.use_4bit}")
-    print(f"  FP16: {args.fp16}")
-    print(f"  BF16: {args.bf16}")
-    print(f"  Gradient checkpointing: {args.gradient_checkpointing}")
+    if accelerator.is_main_process:
+        print(f"Loading BioMistral-7B model...")
+        print(f"Memory optimizations:")
+        print(f"  8-bit quantization: {args.use_8bit}")
+        print(f"  4-bit quantization: {args.use_4bit}")
+        print(f"  FP16: {args.fp16}")
+        print(f"  BF16: {args.bf16}")
+        print(f"  Gradient checkpointing: {args.gradient_checkpointing}")
+        print(f"  DeepSpeed: {args.use_deepspeed}")
     
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(BIOMISTRAL_MODEL['model_name'])
@@ -171,38 +289,62 @@ def load_biomistral_model(args):
     # Model loading arguments
     model_kwargs = {
         "num_labels": 1,
-        "torch_dtype": torch.float16 if args.fp16 else torch.bfloat16 if args.bf16 else torch.float32,
         "low_cpu_mem_usage": True,
         "trust_remote_code": True
     }
     
+    # Set dtype based on precision settings
+    if args.fp16:
+        model_kwargs["torch_dtype"] = torch.float16
+    elif args.bf16:
+        model_kwargs["torch_dtype"] = torch.bfloat16
+    else:
+        model_kwargs["torch_dtype"] = torch.float32
+    
+    # Handle quantization and device mapping
     if quantization_config:
         model_kwargs["quantization_config"] = quantization_config
-        model_kwargs["device_map"] = "auto"
+        # Only use device_map="auto" for quantization without DeepSpeed
+        if not args.use_deepspeed:
+            model_kwargs["device_map"] = "auto"
+        else:
+            # With DeepSpeed, let it handle device placement
+            if accelerator.is_main_process:
+                print("Using DeepSpeed for device placement, skipping device_map")
     
     try:
-        model = AutoModelForSequenceClassification.from_pretrained(
-            BIOMISTRAL_MODEL['model_name'],
-            **model_kwargs
-        )
+        # Load model with appropriate context for DeepSpeed ZeRO-3
+        if args.use_deepspeed and args.deepspeed_stage == 3:
+            with accelerator.main_process_first():
+                model = AutoModelForSequenceClassification.from_pretrained(
+                    BIOMISTRAL_MODEL['model_name'],
+                    **model_kwargs
+                )
+        else:
+            model = AutoModelForSequenceClassification.from_pretrained(
+                BIOMISTRAL_MODEL['model_name'],
+                **model_kwargs
+            )
         
         # Enable gradient checkpointing if requested
         if args.gradient_checkpointing:
             model.gradient_checkpointing_enable()
-            print("Gradient checkpointing enabled")
+            if accelerator.is_main_process:
+                print("Gradient checkpointing enabled")
         
         actual_param_count = get_model_parameters_count(model)
         actual_param_str = format_parameter_count(actual_param_count)
         
-        print(f"Model loaded successfully: {BIOMISTRAL_MODEL['display_name']} ({actual_param_str})")
-        
-        if quantization_config:
-            print(f"Quantization applied: {'4-bit' if args.use_4bit else '8-bit'}")
+        if accelerator.is_main_process:
+            print(f"Model loaded successfully: {BIOMISTRAL_MODEL['display_name']} ({actual_param_str})")
+            if quantization_config:
+                print(f"Quantization applied: {'4-bit' if args.use_4bit else '8-bit'}")
         
         return model, tokenizer, actual_param_count
         
     except Exception as e:
-        print(f"Error loading model: {e}")
+        if accelerator.is_main_process:
+            print(f"Error loading model: {e}")
         raise
 
 def find_latest_checkpoint(checkpoint_dir):
@@ -528,21 +670,14 @@ def save_globally_best_model(trainer, metrics_callback, checkpoint_dir, final_mo
 def train_biomistral_classifier(args):
     """Main training function for BioMistral-7B classifier."""
     
-    # Setup accelerator for distributed/parallel training
-    accelerator = setup_accelerator(args)
+    # Validate arguments
+    args = validate_args(args)
     
-    # Load data
-    train = pair_df(pd.read_csv('data/mondo_train.csv'), args.negative_samples)
-    dev = pair_df(pd.read_csv('data/mondo_dev.csv'), args.negative_samples)
-    
-    # Load model and tokenizer
-    model, tokenizer, actual_param_count = load_biomistral_model(args)
-    
-    # Create directories
+    # Create directories first (before accelerator setup)
     models_dir = pathlib.Path('models')
     models_dir.mkdir(exist_ok=True)
     
-    model_dir_name = f"models_{format_parameter_count(actual_param_count).lower()}_biomistral7b"
+    model_dir_name = f"models_7b_biomistral7b"
     model_base_dir = models_dir / model_dir_name
     model_base_dir.mkdir(exist_ok=True)
     
@@ -551,17 +686,59 @@ def train_biomistral_classifier(args):
     metrics_dir = model_base_dir / "metrics"
     metrics_dir.mkdir(exist_ok=True)
     
-    # Check for existing checkpoints
-    latest_checkpoint, checkpoint_epoch = find_latest_checkpoint(str(checkpoint_dir))
-    resume_from_checkpoint = None
+    # Setup accelerator for distributed/parallel training
+    accelerator = setup_accelerator(args, model_base_dir)
     
+    # Load data
+    if accelerator.is_main_process:
+        print("Loading training data...")
+    train = pair_df(pd.read_csv('data/mondo_train.csv'), args.negative_samples)
+    dev = pair_df(pd.read_csv('data/mondo_dev.csv'), args.negative_samples)
+    
+    # Load model and tokenizer
+    model, tokenizer, actual_param_count = load_biomistral_model(args, accelerator)
+    
+    # Update model directory name with actual parameter count
+    actual_param_str = format_parameter_count(actual_param_count).lower()
+    model_dir_name = f"models_{actual_param_str}_biomistral7b"
+    model_base_dir = models_dir / model_dir_name
+    model_base_dir.mkdir(exist_ok=True)
+    
+    # Update paths
+    checkpoint_dir = model_base_dir / "checkpoints"
+    final_model_dir = model_base_dir / "final_model"
+    metrics_dir = model_base_dir / "metrics"
+    metrics_dir.mkdir(exist_ok=True)
+    
+    # Check for existing checkpoints (only on main process)
+    latest_checkpoint, checkpoint_epoch = None, 0
+    if accelerator.is_main_process:
+        latest_checkpoint, checkpoint_epoch = find_latest_checkpoint(str(checkpoint_dir))
+    
+    # Broadcast checkpoint info to all processes
+    if accelerator.num_processes > 1:
+        checkpoint_info = [latest_checkpoint, checkpoint_epoch]
+        checkpoint_info = accelerator.gather_for_metrics(checkpoint_info)
+        if checkpoint_info:
+            latest_checkpoint, checkpoint_epoch = checkpoint_info[0]
+    
+    resume_from_checkpoint = None
     if latest_checkpoint and checkpoint_epoch < args.epochs:
-        if ask_resume_training(latest_checkpoint, checkpoint_epoch, args.epochs):
-            resume_from_checkpoint = latest_checkpoint
-        else:
-            print("Starting training from scratch")
+        if accelerator.is_main_process:
+            if ask_resume_training(latest_checkpoint, checkpoint_epoch, args.epochs):
+                resume_from_checkpoint = latest_checkpoint
+            else:
+                print("Starting training from scratch")
+        
+        # Broadcast resume decision to all processes
+        if accelerator.num_processes > 1:
+            resume_decision = [resume_from_checkpoint]
+            resume_decision = accelerator.gather_for_metrics(resume_decision)
+            if resume_decision:
+                resume_from_checkpoint = resume_decision[0]
     elif latest_checkpoint and checkpoint_epoch >= args.epochs:
-        print(f"Training already completed ({checkpoint_epoch} epochs >= {args.epochs} target epochs)")
+        if accelerator.is_main_process:
+            print(f"Training already completed ({checkpoint_epoch} epochs >= {args.epochs} target epochs)")
         return
     
     # Tokenize datasets
@@ -612,10 +789,7 @@ def train_biomistral_classifier(args):
         callbacks=[metrics_callback]
     )
     
-    # Prepare with accelerator
-    trainer.model, trainer.optimizer, trainer.train_dataloader, trainer.eval_dataloader = accelerator.prepare(
-        trainer.model, trainer.optimizer, trainer.train_dataloader, trainer.eval_dataloader
-    )
+    # Note: Trainer automatically handles accelerator preparation when using DeepSpeed or multi-GPU
     
     if resume_from_checkpoint:
         print(f"Resuming BioMistral training from checkpoint: {resume_from_checkpoint}")
@@ -740,13 +914,27 @@ def main():
     
     args = parser.parse_args()
     
-    # Validation
-    if args.use_4bit and args.use_8bit:
-        print("Error: Cannot use both 4-bit and 8-bit quantization simultaneously")
-        return
+    # Print usage instructions if running without accelerate launch
+    if not os.environ.get('ACCELERATE_USE_DEEPSPEED') and not os.environ.get('LOCAL_RANK'):
+        print("\n" + "="*80)
+        print("IMPORTANT: For multi-GPU training, use 'accelerate launch':")
+        print("="*80)
+        print("Basic multi-GPU:")
+        print("  accelerate launch --multi_gpu train_biomistral_cls.py --use_8bit --fp16")
+        print("\nWith DeepSpeed:")
+        print("  accelerate launch --multi_gpu train_biomistral_cls.py \\")
+        print("    --use_deepspeed --deepspeed_stage 2 --use_8bit --fp16")
+        print("\nMaximum memory efficiency:")
+        print("  accelerate launch --multi_gpu train_biomistral_cls.py \\")
+        print("    --use_4bit --gradient_checkpointing --use_deepspeed --deepspeed_stage 3")
+        print("\nConfigure accelerate first: accelerate config")
+        print("="*80 + "\n")
     
-    if args.fp16 and args.bf16:
-        print("Error: Cannot use both FP16 and BF16 simultaneously")
+    # Validate arguments (will raise errors for conflicts)
+    try:
+        args = validate_args(args)
+    except ValueError as e:
+        print(f"Error: {e}")
         return
     
     # Set seed for reproducibility
