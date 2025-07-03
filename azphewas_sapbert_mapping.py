@@ -374,7 +374,7 @@ Rank-2 Acc: {100*metrics["rank_2_accuracy"]:.1f}%'''
     plt.tight_layout()
     
     # Save plot
-    plot_path = Path(output_dir) / 'azphewas_sapbert_roc_analysis.png'
+    plot_path = Path(output_dir) / 'azphewas_mondo_sapbert_roc_analysis.png'
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     logger.info(f"ROC curve saved to: {plot_path}")
     
@@ -423,13 +423,13 @@ def save_evaluation_results(metrics: Dict, ground_truth: Dict, output_dir: str =
         'description': 'Percentage of ground truth matches found in top 2 ranks'
     }])
     
-    summary_path = Path(output_dir) / 'azphewas_evaluation_summary.csv'
+    summary_path = Path(output_dir) / 'azphewas_mondo_evaluation_summary.csv'
     summary_df.to_csv(summary_path, index=False)
     logger.info(f"Summary metrics saved to: {summary_path}")
     
     # Save detailed results
     detailed_df = pd.DataFrame(metrics['detailed_results'])
-    detailed_path = Path(output_dir) / 'azphewas_evaluation_detailed.csv'
+    detailed_path = Path(output_dir) / 'azphewas_mondo_evaluation_detailed.csv'
     detailed_df.to_csv(detailed_path, index=False)
     logger.info(f"Detailed results saved to: {detailed_path}")
     
@@ -444,7 +444,7 @@ def save_evaluation_results(metrics: Dict, ground_truth: Dict, output_dir: str =
             })
     
     gt_df = pd.DataFrame(gt_rows)
-    gt_path = Path(output_dir) / 'azphewas_ground_truth_fuzzy_matches.csv'
+    gt_path = Path(output_dir) / 'azphewas_mondo_ground_truth_fuzzy_matches.csv'
     gt_df.to_csv(gt_path, index=False)
     logger.info(f"Ground truth matches saved to: {gt_path}")
     
