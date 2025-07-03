@@ -197,7 +197,7 @@ def evaluate_sapbert_performance(azphewas_df: pd.DataFrame,
                                sapbert_matches: List[List[Tuple[str, str, float]]],
                                ground_truth: Dict[str, List[Tuple[str, float]]]) -> Dict:
     """
-    Evaluate SapBERT performance against ground truth.
+    Evaluate SapBERT performance against ground truth on confident subset only.
     
     Args:
         azphewas_df: AzPheWAS phenotypes dataframe
@@ -208,29 +208,52 @@ def evaluate_sapbert_performance(azphewas_df: pd.DataFrame,
         Dictionary with evaluation metrics
     """
     logger.info("="*60)
-    logger.info("EVALUATING SAPBERT PERFORMANCE")
+    logger.info("EVALUATING SAPBERT PERFORMANCE ON CONFIDENT SUBSET")
     logger.info("="*60)
     
-    # Create evaluation data
+    # Create evaluation data - only for phenotypes with ground truth
     y_true = []  # Binary labels: 1 if SapBERT prediction matches ground truth
     y_scores = []  # SapBERT similarity scores
     detailed_results = []
     
     phenocodes = azphewas_df['phenocode'].tolist()
     
-    for i, phenocode in enumerate(phenocodes):
-        if phenocode not in ground_truth:
-            continue  # Skip phenotypes without ground truth
-        
+    # Track phenotype-level metrics
+    phenotype_results = []
+    
+    for phenocode in ground_truth.keys():
+        try:
+            i = phenocodes.index(phenocode)
+        except ValueError:
+            logger.warning(f"Phenocode {phenocode} not found in azphewas_df - skipping")
+            continue
+            
         gt_mondo_ids = {mondo_id for mondo_id, _ in ground_truth[phenocode]}
         sapbert_predictions = sapbert_matches[i]
         
-        # Check both 1st and 2nd SapBERT predictions
-        for rank, (pred_mondo_id, pred_label, pred_score) in enumerate(sapbert_predictions):
-            is_correct = pred_mondo_id in gt_mondo_ids
+        # For ROC analysis, use the top prediction score
+        if len(sapbert_predictions) > 0:
+            top_pred_mondo_id, top_pred_label, top_pred_score = sapbert_predictions[0]
+            is_correct = top_pred_mondo_id in gt_mondo_ids
             
             y_true.append(1 if is_correct else 0)
-            y_scores.append(pred_score)
+            y_scores.append(top_pred_score)
+            
+            # Store phenotype-level result
+            phenotype_results.append({
+                'phenocode': phenocode,
+                'phenotype': azphewas_df.iloc[i]['phenotype'],
+                'top_predicted_mondo_id': top_pred_mondo_id,
+                'top_predicted_score': top_pred_score,
+                'is_top_correct': is_correct,
+                'ground_truth_ids': list(gt_mondo_ids),
+                'rank_1_correct': is_correct,
+                'rank_2_correct': any(pred[0] in gt_mondo_ids for pred in sapbert_predictions[:2])
+            })
+        
+        # Store detailed results for all predictions
+        for rank, (pred_mondo_id, pred_label, pred_score) in enumerate(sapbert_predictions):
+            is_correct = pred_mondo_id in gt_mondo_ids
             
             detailed_results.append({
                 'phenocode': phenocode,
@@ -245,12 +268,12 @@ def evaluate_sapbert_performance(azphewas_df: pd.DataFrame,
     y_true = np.array(y_true)
     y_scores = np.array(y_scores)
     
-    logger.info(f"Evaluation dataset:")
+    logger.info(f"Evaluation dataset (confident subset only):")
     logger.info(f"  Phenotypes with ground truth: {len(ground_truth):,}")
-    logger.info(f"  Total predictions evaluated: {len(y_true):,}")
-    logger.info(f"  Correct predictions: {np.sum(y_true):,} ({100*np.mean(y_true):.1f}%)")
+    logger.info(f"  Phenotypes successfully evaluated: {len(phenotype_results):,}")
+    logger.info(f"  Top-1 correct predictions: {np.sum(y_true):,} ({100*np.mean(y_true):.1f}%)")
     
-    # Calculate ROC curve and AUC
+    # Calculate ROC curve and AUC using top predictions only
     fpr, tpr, thresholds = roc_curve(y_true, y_scores)
     roc_auc = auc(fpr, tpr)
     
@@ -276,21 +299,10 @@ def evaluate_sapbert_performance(azphewas_df: pd.DataFrame,
     f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
     accuracy = (tp + tn) / len(y_true)
     
-    # Rank-based evaluation
-    rank_1_correct = 0
-    rank_2_correct = 0
-    total_evaluated_phenotypes = len(ground_truth)
-    
-    for phenocode in ground_truth.keys():
-        i = phenocodes.index(phenocode)
-        gt_mondo_ids = {mondo_id for mondo_id, _ in ground_truth[phenocode]}
-        sapbert_predictions = sapbert_matches[i]
-        
-        if len(sapbert_predictions) > 0 and sapbert_predictions[0][0] in gt_mondo_ids:
-            rank_1_correct += 1
-        
-        if any(pred[0] in gt_mondo_ids for pred in sapbert_predictions[:2]):
-            rank_2_correct += 1
+    # Rank-based evaluation (phenotype-level)
+    rank_1_correct = sum(1 for result in phenotype_results if result['rank_1_correct'])
+    rank_2_correct = sum(1 for result in phenotype_results if result['rank_2_correct'])
+    total_evaluated_phenotypes = len(phenotype_results)
     
     metrics = {
         'roc_auc': roc_auc,
@@ -302,19 +314,20 @@ def evaluate_sapbert_performance(azphewas_df: pd.DataFrame,
         'recall': recall,
         'f1_score': f1_score,
         'accuracy': accuracy,
-        'rank_1_accuracy': rank_1_correct / total_evaluated_phenotypes,
-        'rank_2_accuracy': rank_2_correct / total_evaluated_phenotypes,
-        'total_predictions': len(y_true),
+        'rank_1_accuracy': rank_1_correct / total_evaluated_phenotypes if total_evaluated_phenotypes > 0 else 0,
+        'rank_2_accuracy': rank_2_correct / total_evaluated_phenotypes if total_evaluated_phenotypes > 0 else 0,
+        'total_ground_truth_phenotypes': len(ground_truth),
+        'successfully_evaluated_phenotypes': total_evaluated_phenotypes,
         'correct_predictions': np.sum(y_true),
-        'evaluated_phenotypes': total_evaluated_phenotypes,
         'fpr': fpr,
         'tpr': tpr,
         'thresholds': thresholds,
-        'detailed_results': detailed_results
+        'detailed_results': detailed_results,
+        'phenotype_results': phenotype_results
     }
     
     # Log results
-    logger.info("\nPerformance Metrics:")
+    logger.info("\nPerformance Metrics (on confident subset):")
     logger.info(f"  ROC AUC: {roc_auc:.4f}")
     logger.info(f"  Youden's J Statistic: {optimal_youden_j:.4f}")
     logger.info(f"  Optimal Threshold: {optimal_threshold:.4f}")
@@ -323,9 +336,25 @@ def evaluate_sapbert_performance(azphewas_df: pd.DataFrame,
     logger.info(f"  Precision: {precision:.4f}")
     logger.info(f"  F1 Score: {f1_score:.4f}")
     logger.info(f"  Accuracy: {accuracy:.4f}")
-    logger.info(f"\nRank-based Metrics:")
+    logger.info(f"\nRank-based Metrics (phenotype-level):")
     logger.info(f"  Rank-1 Accuracy: {rank_1_correct}/{total_evaluated_phenotypes} ({100*metrics['rank_1_accuracy']:.1f}%)")
     logger.info(f"  Rank-2 Accuracy: {rank_2_correct}/{total_evaluated_phenotypes} ({100*metrics['rank_2_accuracy']:.1f}%)")
+    
+    # Show some examples of correct and incorrect predictions
+    logger.info("\nSample Evaluation Results:")
+    correct_examples = [r for r in phenotype_results if r['rank_1_correct']][:3]
+    incorrect_examples = [r for r in phenotype_results if not r['rank_1_correct']][:3]
+    
+    if correct_examples:
+        logger.info("  Correct predictions (Top-1):")
+        for ex in correct_examples:
+            logger.info(f"    ✓ {ex['phenotype']} → {ex['top_predicted_mondo_id']} (score: {ex['top_predicted_score']:.4f})")
+    
+    if incorrect_examples:
+        logger.info("  Incorrect predictions (Top-1):")
+        for ex in incorrect_examples:
+            logger.info(f"    ✗ {ex['phenotype']} → {ex['top_predicted_mondo_id']} (score: {ex['top_predicted_score']:.4f})")
+            logger.info(f"      Ground truth: {ex['ground_truth_ids']}")
     
     return metrics
 
@@ -421,13 +450,27 @@ def save_evaluation_results(metrics: Dict, ground_truth: Dict, output_dir: str =
         'metric': 'Rank_2_Accuracy',
         'value': metrics['rank_2_accuracy'],
         'description': 'Percentage of ground truth matches found in top 2 ranks'
+    }, {
+        'metric': 'Total_Ground_Truth_Phenotypes',
+        'value': metrics['total_ground_truth_phenotypes'],
+        'description': 'Total number of phenotypes with ground truth'
+    }, {
+        'metric': 'Successfully_Evaluated_Phenotypes',
+        'value': metrics['successfully_evaluated_phenotypes'],
+        'description': 'Number of phenotypes successfully evaluated'
     }])
     
     summary_path = Path(output_dir) / 'azphewas_mondo_evaluation_summary.csv'
     summary_df.to_csv(summary_path, index=False)
     logger.info(f"Summary metrics saved to: {summary_path}")
     
-    # Save detailed results
+    # Save phenotype-level results
+    phenotype_df = pd.DataFrame(metrics['phenotype_results'])
+    phenotype_path = Path(output_dir) / 'azphewas_mondo_evaluation_phenotype_level.csv'
+    phenotype_df.to_csv(phenotype_path, index=False)
+    logger.info(f"Phenotype-level results saved to: {phenotype_path}")
+    
+    # Save detailed results (all predictions)
     detailed_df = pd.DataFrame(metrics['detailed_results'])
     detailed_path = Path(output_dir) / 'azphewas_mondo_evaluation_detailed.csv'
     detailed_df.to_csv(detailed_path, index=False)
@@ -448,7 +491,7 @@ def save_evaluation_results(metrics: Dict, ground_truth: Dict, output_dir: str =
     gt_df.to_csv(gt_path, index=False)
     logger.info(f"Ground truth matches saved to: {gt_path}")
     
-    return summary_path, detailed_path, gt_path
+    return summary_path, detailed_path, gt_path, phenotype_path
 
 def log_memory_usage(stage: str):
     """Log current memory usage statistics optimized for CUDA."""
@@ -1018,13 +1061,14 @@ def main():
             plot_path = plot_roc_curve(metrics, output_dir=".")
             
             # Save results
-            summary_path, detailed_path, gt_path = save_evaluation_results(
+            summary_path, detailed_path, gt_path, phenotype_path = save_evaluation_results(
                 metrics, ground_truth, output_dir="."
             )
             
             logger.info(f"\nEvaluation files created:")
             logger.info(f"  ROC plot: {plot_path}")
             logger.info(f"  Summary metrics: {summary_path}")
+            logger.info(f"  Phenotype-level results: {phenotype_path}")
             logger.info(f"  Detailed results: {detailed_path}")
             logger.info(f"  Ground truth: {gt_path}")
         else:
