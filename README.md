@@ -1,4 +1,8 @@
-# Entity Linking Benchmark
+<p align="center">
+  <img src="assets/biomap_banner.png" alt="BioMap Banner" width="100%">
+</p>
+
+# BioMap: Entity Linking Benchmark
 
 A comprehensive benchmarking framework for biomedical entity linking using multiple state-of-the-art approaches including traditional embeddings, fine-tuned transformers, and large language models.
 
